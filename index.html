@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover"/>
   <title>MailChat</title>
 
   <!-- PWA -->
@@ -17,8 +17,10 @@
 
   <style>
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
-    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;height:100vh;overflow:hidden;}
-    #root{height:100vh;}
+    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;height:100vh;height:100dvh;overflow:hidden;}
+    #root{height:100vh;height:100dvh;}
+    /* iOS safe-area / notch 対応 */
+    .bottom-bar-safe{padding-bottom:env(safe-area-inset-bottom,0px);}
     ::-webkit-scrollbar{width:5px;}::-webkit-scrollbar-thumb{background:#D1D5DB;border-radius:3px;}
     body[data-dark="true"]::-webkit-scrollbar-thumb{background:#30363D;}
     @keyframes spin{to{transform:rotate(360deg);}}
@@ -677,8 +679,9 @@ function MailChat(){
       setSummary("");setSumLoading(true);
       summarizeThread(selThread.mails).then(s=>{setSummary(s);setSummaryCache(prev=>{const n={...prev,[selThread.id]:s};lsSet(LS_SUMM,n);return n;});}).catch(e=>setSummary(`要約失敗: ${e.message}`)).finally(()=>setSumLoading(false));
     }
-    requestAnimationFrame(()=>chatBottomRef.current?.scrollIntoView({behavior:'instant'}));
-    // モバイル: スレッド選択でメインパネルに切り替え
+    // double rAF: レイアウト確定後にスクロール（モバイルでは1回だと早すぎる）
+    requestAnimationFrame(()=>requestAnimationFrame(()=>chatBottomRef.current?.scrollIntoView({behavior:'instant'})));
+    // モバイル: スレッド選択でメインパネルに切り替え（先に切り替えてからスクロール）
     if(isMobile) setShowSidebar(false);
   },[selectedThreadId,isMobile]); // eslint-disable-line
 
@@ -702,8 +705,8 @@ function MailChat(){
       _optimistic:true,
     };
     setEmails(prev=>[...prev,optMail]);
-    setReplyText("");setReplyFiles([]);
-    requestAnimationFrame(()=>chatBottomRef.current?.scrollIntoView({behavior:'smooth'}));
+    setReplyText("");setReplyFiles([]);setReplyFromAccId(null);
+    requestAnimationFrame(()=>requestAnimationFrame(()=>chatBottomRef.current?.scrollIntoView({behavior:'smooth'})));
     try{
       const attachments=await Promise.all(filesSnap.map(async f=>({
         filename:f.name,
@@ -765,7 +768,7 @@ function MailChat(){
     :CONFIG.ACCOUNTS[0];
 
   return(
-    <div style={{display:"flex",height:"100vh",fontFamily:"-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif",color:T.text,overflow:"hidden",background:T.bg}} onClick={()=>ctxMenu&&setCtxMenu(null)}>
+    <div style={{display:"flex",height:"100dvh",fontFamily:"-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif",color:T.text,overflow:"hidden",background:T.bg}} onClick={()=>ctxMenu&&setCtxMenu(null)}>
 
       <Toast toasts={toasts}/>
 
@@ -940,9 +943,9 @@ function MailChat(){
                   <span style={{color:T.textSec,marginLeft:8}}>{spamResult.reason}</span>
                 </div>}
                 <div style={{display:"flex",gap:6,alignItems:"center",position:"relative"}}>
-                  <button onClick={()=>openCompose("reply",selThread)} style={mkBtn(T.accent)}>↩ 返信</button>
-                  <button onClick={()=>openCompose("replyAll",selThread)} style={mkBtn("#6B7280")}>↩↩ 全返信</button>
-                  <button onClick={()=>openCompose("forward",selThread)} style={mkBtn("#6B7280")}>→ 転送</button>
+                  <button onClick={()=>openCompose("reply",selThread)} style={mkBtn(T.accent)}>↩ {isMobile?"":"返信"}</button>
+                  {!isMobile&&<button onClick={()=>openCompose("replyAll",selThread)} style={mkBtn("#6B7280")}>↩↩ 全返信</button>}
+                  {!isMobile&&<button onClick={()=>openCompose("forward",selThread)} style={mkBtn("#6B7280")}>→ 転送</button>}
                   <div style={{position:"relative"}}>
                     <button onClick={()=>setShowActMenu(v=>!v)} style={{...mkBtn(T.textTer),background:T.hover,color:T.textSec,border:"1px solid "+T.border}}>⋯</button>
                     {showActMenu&&<div onClick={()=>setShowActMenu(false)} style={{position:"fixed",inset:0,zIndex:199}}/>}
@@ -970,7 +973,7 @@ function MailChat(){
               </div>
 
               {/* チャット */}
-              <div style={{flex:1,overflowY:"auto",padding:"16px 20px",background:T.bg}}>
+              <div style={{flex:1,overflowY:"auto",padding:isMobile?"10px 12px":"16px 20px",background:T.bg,WebkitOverflowScrolling:"touch"}}>
                 {(()=>{
                   const result=[];let lastDay=null;
                   selThread.mails.forEach((m,i)=>{
@@ -1003,19 +1006,19 @@ function MailChat(){
               )}
 
               {/* ════ Spike スタイル ボトム入力バー ════ */}
-              <div style={{borderTop:`1px solid ${T.border}`,background:T.surface,padding:"10px 14px"}}>
+              <div className="bottom-bar-safe" style={{borderTop:`1px solid ${T.border}`,background:T.surface,padding:"10px 14px",flexShrink:0}}>
                 {/* From / To 表示行 */}
-                <div style={{display:"flex",alignItems:"center",flexWrap:"wrap",gap:6,fontSize:11,color:T.textTer,marginBottom:6}}>
+                <div style={{display:"flex",alignItems:"center",flexWrap:"wrap",gap:isMobile?3:6,fontSize:11,color:T.textTer,marginBottom:6}}>
                   <span>From:</span>
                   <select value={bottomFromAcc?.id||""} onChange={e=>setReplyFromAccId(e.target.value)}
-                    style={{fontSize:11,border:"none",background:"none",color:T.textSec,cursor:"pointer",outline:"none",fontWeight:500,maxWidth:180}}>
-                    {CONFIG.ACCOUNTS.map(a=><option key={a.id} value={a.id}>{a.name} ({a.email})</option>)}
+                    style={{fontSize:11,border:"none",background:"none",color:T.textSec,cursor:"pointer",outline:"none",fontWeight:500,maxWidth:isMobile?120:180}}>
+                    {CONFIG.ACCOUNTS.map(a=><option key={a.id} value={a.id}>{isMobile?a.name:`${a.name} (${a.email})`}</option>)}
                   </select>
                   <span style={{color:T.border}}>|</span>
                   <span>To:</span>
-                  <span style={{color:T.textSec,fontWeight:500,maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}
-                    title={bottomReplyTo}>{bottomReplyTo||"(送信先未確定)"}</span>
-                  {replyFiles.length>0&&<span style={{marginLeft:4,color:T.accent}}>📎 {replyFiles.length}件</span>}
+                  <span style={{color:T.textSec,fontWeight:500,maxWidth:isMobile?130:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}
+                    title={bottomReplyTo}>{bottomReplyTo||"(未確定)"}</span>
+                  {replyFiles.length>0&&<span style={{marginLeft:2,color:T.accent}}>📎{replyFiles.length}</span>}
                 </div>
                 <div style={{display:"flex",alignItems:"flex-end",gap:8,background:T.hover,borderRadius:14,padding:"6px 8px 6px 14px",border:`1px solid ${T.border}`}}>
                   {/* 添付ボタン */}
@@ -1032,9 +1035,13 @@ function MailChat(){
                     value={replyText}
                     onChange={e=>{setReplyText(e.target.value);e.target.style.height='auto';e.target.style.height=Math.min(e.target.scrollHeight,140)+'px';}}
                     onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();handleBottomSend();}}}
-                    placeholder={`${contact.name} へ返信… (Enter で送信 / Shift+Enter で改行)`}
+                    onFocus={()=>{
+                      // モバイルでキーボードが開いた後に入力欄が見える位置にスクロール
+                      if(isMobile) setTimeout(()=>replyInputRef.current?.scrollIntoView({behavior:'smooth',block:'nearest'}),320);
+                    }}
+                    placeholder={isMobile?`${contact.name} へ返信…`:`${contact.name} へ返信… (Enter で送信 / Shift+Enter で改行)`}
                     rows={1}
-                    style={{flex:1,background:"none",border:"none",outline:"none",resize:"none",fontSize:14,color:T.text,lineHeight:1.5,fontFamily:"inherit",maxHeight:140,overflow:"auto",padding:"4px 0"}}
+                    style={{flex:1,background:"none",border:"none",outline:"none",resize:"none",fontSize:14,color:T.text,lineHeight:1.5,fontFamily:"inherit",maxHeight:isMobile?80:140,overflow:"auto",padding:"4px 0"}}
                   />
                   {/* ✨ AI返信案ボタン */}
                   <button
