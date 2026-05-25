@@ -1,0 +1,1160 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>MailChat</title>
+
+  <!-- PWA -->
+  <link rel="icon" href="data:,"/>
+  <link rel="manifest" href="/manifest.json"/>
+  <meta name="theme-color" content="#4A5EDB"/>
+  <meta name="mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="MailChat"/>
+  <meta name="application-name" content="MailChat"/>
+
+  <style>
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;height:100vh;overflow:hidden;}
+    #root{height:100vh;}
+    ::-webkit-scrollbar{width:5px;}::-webkit-scrollbar-thumb{background:#D1D5DB;border-radius:3px;}
+    body[data-dark="true"]::-webkit-scrollbar-thumb{background:#30363D;}
+    @keyframes spin{to{transform:rotate(360deg);}}
+    @keyframes slideUp{from{transform:translateY(20px);opacity:0;}to{transform:translateY(0);opacity:1;}}
+    .spinner{display:inline-block;width:12px;height:12px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:spin .6s linear infinite;}
+    .ctx-menu{position:fixed;border-radius:10px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.18);z-index:9000;min-width:180px;}
+    .ctx-item{padding:8px 14px;font-size:13px;cursor:pointer;border-radius:7px;display:flex;align-items:center;gap:8px;}
+    .ctx-item:hover{filter:brightness(.95);}
+    .ctx-sep{height:1px;margin:3px 0;}
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script type="text/babel" data-type="module">
+
+// ═══════════════════════════════════════════════
+//  テーマ
+// ═══════════════════════════════════════════════
+const LIGHT = {
+  bg:"#F5F5F7", sidebar:"#fff", surface:"#fff", surfaceAlt:"#F9FAFB",
+  hover:"#F3F4F6", border:"#E5E7EB", borderFaint:"#F3F4F6",
+  text:"#1A1D2E", textSec:"#6B7280", textTer:"#9CA3AF",
+  recvBubble:"#F3F4F6", unreadBubble:"#fff", unreadBorder:"#E0E7FF",
+  inputBg:"#F9FAFB", accent:"#4A5EDB", highlight:"#EEF0FD",
+  threadHover:"#FAFBFF", summaryBg:"#F9FAFB", styleBg:"#FAFAFF", styleChip:"#EDE9FE",
+};
+const DARK = {
+  bg:"#0D1117", sidebar:"#161B27", surface:"#1C2333", surfaceAlt:"#141924",
+  hover:"#1E2A3A", border:"#30363D", borderFaint:"#21262D",
+  text:"#E6EDF3", textSec:"#8B949E", textTer:"#6E7681",
+  recvBubble:"#1E2A3A", unreadBubble:"#1C2333", unreadBorder:"#3D4F9F",
+  inputBg:"#141924", accent:"#6B7FEE", highlight:"#1D2649",
+  threadHover:"#161F2E", summaryBg:"#1E2333", styleBg:"#19162A", styleChip:"#2D2045",
+};
+
+// ═══════════════════════════════════════════════
+//  設定
+// ═══════════════════════════════════════════════
+const CONFIG = {
+  N8N_BASE_URL:"https://n8n.niida-imai.work",
+  FETCH_WEBHOOK:"/webhook/fetch-emails",
+  SEND_WEBHOOK:"/webhook/send-email",
+  STYLE_PROFILE_WEBHOOK:"/webhook/style-profile",
+  CLAUDE_API_KEY:"",
+  CLAUDE_MODEL:"claude-sonnet-4-20250514",
+  STYLE_SAMPLE_COUNT:20,
+  ACCOUNTS:[
+    {id:"work",    name:"仕事用",       email:"imai@1711.jp",        color:"#4A5EDB"},
+    {id:"private", name:"プライベート", email:"private@example.com", color:"#10B981"},
+  ],
+  // ACCOUNTS 以外に「自分」として扱うアドレス（サブ・テスト用など）
+  MY_EXTRA_EMAILS:["fcbb.showtime@gmail.com"],
+};
+// 自分の全アドレス = ACCOUNTS + MY_EXTRA_EMAILS
+const MY_IDENTITIES=[
+  ...CONFIG.ACCOUNTS.map(a=>a.email.toLowerCase()),
+  ...(CONFIG.MY_EXTRA_EMAILS||[]).map(e=>e.toLowerCase()),
+];
+const MY_EMAILS=MY_IDENTITIES; // 後方互換
+const LS_PROFILE = "mailchat_style_profile";
+const LS_STARRED = "mailchat_starred";
+const LS_READ    = "mailchat_read";
+const LS_SUMM    = "mailchat_summaries";
+const LS_TASKS   = "mailchat_tasks";
+const LS_DARK    = "mailchat_dark";
+
+// ═══════════════════════════════════════════════
+//  ユーティリティ
+// ═══════════════════════════════════════════════
+const stripPrefix = (s) => (s||"").replace(/^(Re|Fwd|Fw|RE|FWD|FW):\s*/gi,"").trim();
+const isSelf = (e) => MY_EMAILS.includes((e||"").toLowerCase());
+const lsGet  = (k,d) => {try{const v=localStorage.getItem(k);return v?JSON.parse(v):d;}catch{return d;}};
+const lsSet  = (k,v) => {try{localStorage.setItem(k,JSON.stringify(v));}catch{}};
+
+const normalizeSubject = (s) => {
+  if(!s)return'';
+  return stripPrefix(s).replace(/\s+/g,' ').replace(/　/g,' ').normalize('NFC').trim().toLowerCase();
+};
+// messageId が空/undefined でもクラッシュしない安定キー
+const getMailKey=(m)=>m.messageId||m.id||[m.from||'',m.subject||'',m.date||''].join('\x00');
+
+const getContact = (thread) => {
+  for(const m of thread.mails){
+    if(!isSelf(m.from))return{name:m.fromName||m.from.split("@")[0],email:m.from};
+    if(m.to&&!isSelf(m.to))return{name:m.to.split("@")[0],email:m.to};
+  }
+  const m=thread.mails[0];
+  return{name:m.fromName||m.from.split("@")[0],email:m.from};
+};
+
+const ACOLORS=["#4A5EDB","#10B981","#F59E0B","#EF4444","#8B5CF6","#06B6D4","#F97316","#EC4899","#14B8A6","#A855F7"];
+const avatarColor=(s)=>{let h=0;for(const c of(s||"?"))h=(h*31+c.charCodeAt(0))&0xFFFF;return ACOLORS[h%ACOLORS.length];};
+const initials=(n)=>{if(!n)return"?";const p=n.trim().split(/\s+/);return p.length>1?(p[0][0]+p[p.length-1][0]).toUpperCase():n.slice(0,2).toUpperCase();};
+
+const formatDate=(ds)=>{
+  if(!ds)return"";const d=new Date(ds);if(isNaN(d))return ds;
+  const now=new Date(),diff=(new Date(now.getFullYear(),now.getMonth(),now.getDate())-new Date(d.getFullYear(),d.getMonth(),d.getDate()))/86400000;
+  if(diff<1)return d.toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit"});
+  if(diff<7)return["日","月","火","水","木","金","土"][d.getDay()]+"曜";
+  if(d.getFullYear()===now.getFullYear())return(d.getMonth()+1)+"/"+(d.getDate());
+  return d.getFullYear()+"/"+(d.getMonth()+1)+"/"+(d.getDate());
+};
+const formatDateSep=(ds)=>{
+  const d=new Date(ds);if(isNaN(d))return"";
+  const now=new Date(),diff=(new Date(now.getFullYear(),now.getMonth(),now.getDate())-new Date(d.getFullYear(),d.getMonth(),d.getDate()))/86400000;
+  if(diff<1)return"今日";if(diff<2)return"昨日";
+  return d.toLocaleDateString("ja-JP",{year:"numeric",month:"long",day:"numeric",weekday:"short"});
+};
+const dayKey=(ds)=>{const d=new Date(ds);return isNaN(d)?ds:`${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;};
+const getDateGroup=(ds)=>{
+  const d=new Date(ds);const now=new Date();
+  if(isNaN(d))return"不明";
+  const sod=(x)=>{const c=new Date(x);c.setHours(0,0,0,0);return c;};
+  const todayStart=sod(now);const yd=new Date(todayStart);yd.setDate(yd.getDate()-1);
+  if(d>=todayStart)return"今日";
+  if(d>=yd)return"昨日";
+  const weekStart=new Date(todayStart);weekStart.setDate(todayStart.getDate()-6);
+  if(d>=weekStart)return"今週";
+  if(d.getFullYear()===now.getFullYear()&&d.getMonth()===now.getMonth())return"今月";
+  const lm=new Date(now.getFullYear(),now.getMonth()-1,1);
+  if(d.getFullYear()===lm.getFullYear()&&d.getMonth()===lm.getMonth())return"先月";
+  return d.getFullYear()+"年"+(d.getMonth()+1)+"月";
+};
+
+const stripQuoted=(body)=>{
+  if(!body)return{text:'',hasQuote:false};
+  const lines=body.split('\n');
+  const pats=[
+    /^>+/,
+    /^-{3,}\s*(original message|forwarded|転送)/i,
+    /^_{4,}/,
+    /^On .{5,100} wrote\s*:/i,
+    /^\d{4}[\/\-年]\d{1,2}[\/\-月]\d{1,2}.{0,60}wrote\s*:/i,
+    /^-----.{0,30}-----/,
+    /^【?From[\s：:]/i,
+    /^差出人[\s：:]/,
+    /^送信日時[\s：:]/,
+    /^In reply to/i,
+    // n8n 自動送信フッター
+    /^-{2,}\s*this email was sent/i,
+    /^-{2,}\s*このメールは自動/i,
+    // Spike / チャットアプリ自動フッター
+    /^chat\s*@\s*spike/i,
+    /^sent\s*(from|via|with)\s*(spike|gmail|mail)/i,
+    /^iphone\s*から送信/i,
+    // メール署名セパレーター
+    /^--\s*$/,
+    /^_{2,}\s*$/,
+  ];
+  let cut=lines.length;
+  for(let i=0;i<lines.length;i++){const t=lines[i].trim();if(t&&pats.some(p=>p.test(t))){cut=i;while(cut>0&&lines[cut-1].trim()==='')cut--;break;}}
+  return{text:lines.slice(0,cut).join('\n').trimEnd()||body.slice(0,200),hasQuote:cut<lines.length};
+};
+
+const groupByThread=(emails)=>{
+  const midToKey=new Map();
+  // getMailKey() で messageId 欠落メールも安全にキー付け
+  emails.forEach(m=>midToKey.set(getMailKey(m),normalizeSubject(m.subject)||'(件名なし)'));
+  emails.forEach(m=>{
+    const mk=getMailKey(m);
+    const refs=[m.inReplyTo,...(m.references||'').split(/\s+/)].map(r=>(r||'').trim()).filter(Boolean);
+    for(const ref of refs){
+      if(midToKey.has(ref)){
+        const pk=midToKey.get(ref),cur=midToKey.get(mk);
+        if(cur!==pk)midToKey.forEach((v,k)=>{if(v===cur)midToKey.set(k,pk);});
+        break;
+      }
+    }
+  });
+  const km=new Map();
+  emails.forEach(m=>{const key=midToKey.get(getMailKey(m))||normalizeSubject(m.subject)||'(件名なし)';if(!km.has(key))km.set(key,[]);km.get(key).push(m);});
+  const threads=[];
+  km.forEach((mails,key)=>{
+    const sorted=[...mails].sort((a,b)=>new Date(a.date)-new Date(b.date));
+    const unread=sorted.filter(m=>!m.read&&!isSelf(m.from)).length;
+    const hasAttach=sorted.some(m=>(m.attachments||[]).length>0);
+    threads.push({id:key,subject:sorted[0].subject?stripPrefix(sorted[0].subject):key,mails:sorted,latest:sorted[sorted.length-1],unread,accountId:sorted[0].accountId,hasAttach});
+  });
+  return threads.sort((a,b)=>new Date(b.latest.date)-new Date(a.latest.date));
+};
+
+const attIcon=(mime)=>mime?.startsWith("image/")?"🖼":mime?.includes("pdf")?"📄":mime?.includes("word")||mime?.includes("document")?"📝":mime?.includes("sheet")||mime?.includes("excel")?"📊":mime?.includes("zip")||mime?.includes("compressed")?"🗜":"📎";
+const attSize=(n)=>n>1048576?(n/1048576).toFixed(1)+"MB":n>1024?(n/1024).toFixed(0)+"KB":n?n+"B":"";
+
+// ═══════════════════════════════════════════════
+//  Claude API
+// ═══════════════════════════════════════════════
+const claudeRequest=async(system,userContent,maxTokens=1024)=>{
+  if(!CONFIG.CLAUDE_API_KEY)throw new Error("CLAUDE_API_KEY が未設定です");
+  const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",
+    headers:{"x-api-key":CONFIG.CLAUDE_API_KEY,"anthropic-version":"2023-06-01","content-type":"application/json","anthropic-dangerous-direct-browser-access":"true"},
+    body:JSON.stringify({model:CONFIG.CLAUDE_MODEL,max_tokens:maxTokens,system,messages:[{role:"user",content:userContent}]})});
+  if(!res.ok){const e=await res.json().catch(()=>({}));throw new Error(`Claude ${res.status}: ${e.error?.message||res.statusText}`);}
+  return(await res.json()).content[0].text;
+};
+const summarizeThread=(mails)=>claudeRequest("メール要約アシスタント。スレッドを1〜2文で要約。要対応なら「要対応：」を先頭に。",mails.map(m=>`From:${m.from}\n${m.body||m.snippet||""}`).join("\n\n---\n\n"));
+const detectSpam=async(mail)=>JSON.parse((await claudeRequest(`スパム検出AI。JSON{"score":0-100,"verdict":"スパム"|"疑わしい"|"正常","reason":"1文"}のみ返す。`,`From:${mail.from}\nSubject:${mail.subject}\n\n${mail.body||""}`)).trim());
+const analyzeStyle=async(sentMails)=>JSON.parse((await claudeRequest(`文体分析。JSON{"tone":"","greetings":[],"closings":[],"characteristics":[],"sentenceLength":"短め|中程度|長め","formalityLevel":1-5,"keyPhrases":[],"avoidPhrases":[],"summary":""}のみ返す。`,sentMails.slice(0,CONFIG.STYLE_SAMPLE_COUNT).map((m,i)=>`【${i+1}】${m.subject}\n${m.body||""}`).join("\n\n════\n\n"),2048)).trim());
+const generateReplies=async(mail,sp)=>{
+  const styleHint = sp
+    ? "文体:"+sp.tone+" 丁寧さ:"+sp.formalityLevel+"/5 書き出し:"+(sp.greetings||[]).join("/")+" 締め:"+(sp.closings||[]).join("/")
+    : "";
+  const system = "ビジネスメール返信アシスタント。"+styleHint+"\n3案をJSON[{\"label\":\"丁寧\",\"body\":\"...\"},{\"label\":\"簡潔\",\"body\":\"...\"},{\"label\":\"詳細\",\"body\":\"...\"}]のみで返す。";
+  const user   = "From:"+mail.from+"\nSubject:"+mail.subject+"\n\n"+(mail.body||mail.snippet||"");
+  return JSON.parse((await claudeRequest(system,user,1500)).trim());
+};
+
+// ═══════════════════════════════════════════════
+//  n8n
+// ═══════════════════════════════════════════════
+const fetchEmails=async(accountId)=>{
+  const res=await fetch(`${CONFIG.N8N_BASE_URL}${CONFIG.FETCH_WEBHOOK}?accountId=${accountId}`);
+  if(!res.ok)throw new Error(`メール取得エラー: ${res.status}`);
+  const d=await res.json();return Array.isArray(d)?d:(d.emails||[]);
+};
+const sendEmailAPI=async(p)=>{
+  const res=await fetch(`${CONFIG.N8N_BASE_URL}${CONFIG.SEND_WEBHOOK}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(p)});
+  if(!res.ok)throw new Error(`送信エラー: ${res.status}`);
+  try{return await res.json();}catch{return {};}
+};
+// スレッド内で「自分以外の最新送信者」を返す（返信先アドレス決定）
+const findReplyTarget=(thread)=>{
+  const m=[...thread.mails].reverse().find(m=>!isSelf(m.from));
+  if(m?.from) return m.from;
+  // 全メールが自分同士（テスト用2アドレス間など）→ 最新メールのtoから相手を特定
+  const last=thread.mails[thread.mails.length-1];
+  return (last?.to||"").split(/[,;<>\s]+/).find(s=>s.includes("@"))||"";
+};
+// スレッドに対して「適切な送信元アカウント」を決定
+// 優先: 受信メールの To に含まれる自分のアドレス → accountId → 先頭アカウント
+const findFromAccount=(thread)=>{
+  const m=[...thread.mails].reverse().find(m=>!isSelf(m.from)&&isSelf(m.to));
+  return CONFIG.ACCOUNTS.find(a=>a.email.toLowerCase()===(m?.to||"").toLowerCase())
+    ||CONFIG.ACCOUNTS.find(a=>a.id===thread.accountId)
+    ||CONFIG.ACCOUNTS[0];
+};
+// ファイルをBase64に変換
+const fileToBase64=(file)=>new Promise((resolve,reject)=>{
+  const r=new FileReader();
+  r.onload=()=>resolve(r.result.split(',')[1]);
+  r.onerror=reject;
+  r.readAsDataURL(file);
+});
+const pingN8n=()=>fetch(`${CONFIG.N8N_BASE_URL}${CONFIG.FETCH_WEBHOOK}?ping=1`,{signal:AbortSignal.timeout(3000)}).then(r=>r.ok||r.status===400||r.status===404).catch(()=>false);
+const saveProfileNotion=async(p)=>{const res=await fetch(`${CONFIG.N8N_BASE_URL}${CONFIG.STYLE_PROFILE_WEBHOOK}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({profile:p})});if(!res.ok)throw new Error("Notion保存エラー");};
+
+// ═══════════════════════════════════════════════
+//  サブコンポーネント
+// ═══════════════════════════════════════════════
+const Dot=({on})=><span style={{display:"inline-block",width:7,height:7,borderRadius:"50%",background:on?"#10B981":"#EF4444",marginLeft:5,flexShrink:0}}/>;
+const Avatar=({name,email,size=36})=>{
+  const bg=avatarColor(email||name||"?");
+  return<div style={{width:size,height:size,borderRadius:"50%",background:bg,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:size*.38,fontWeight:700,flexShrink:0,letterSpacing:"-.5px"}}>{initials(name||"?")}</div>;
+};
+const SpamBadge=({verdict})=>{const c={スパム:"#EF4444",疑わしい:"#F59E0B",正常:"#10B981"};return<span style={{fontSize:11,padding:"2px 7px",borderRadius:10,background:c[verdict]||"#6B7280",color:"#fff",marginLeft:6}}>{verdict}</span>;};
+const DateSeparator=({label,T})=>(
+  <div style={{display:"flex",alignItems:"center",margin:"16px 0 12px"}}>
+    <div style={{flex:1,height:1,background:T.border}}/>
+    <span style={{margin:"0 12px",fontSize:11,color:T.textTer,background:T.bg,padding:"2px 10px",borderRadius:10,whiteSpace:"nowrap"}}>{label}</span>
+    <div style={{flex:1,height:1,background:T.border}}/>
+  </div>
+);
+
+// 添付ファイル — 画像はビジュアルプレビュー、その他はファイルカード
+const AttachmentBubble=({att,isSent,T})=>{
+  const isImage=!!(att.mimeType&&att.mimeType.startsWith("image/"));
+  const isPdf=!!(att.mimeType&&att.mimeType.includes("pdf"));
+  const icon=attIcon(att.mimeType);
+  const size=attSize(att.size);
+  const wrapStyle={marginTop:6,marginLeft:isSent?"auto":"40px",maxWidth:"72%",display:"flex",flexDirection:"column",alignItems:isSent?"flex-end":"flex-start"};
+  const cardBase={borderRadius:isSent?"14px 14px 4px 14px":"4px 14px 14px 14px",overflow:"hidden",border:"1px solid "+(isSent?"rgba(255,255,255,.2)":T.border),background:isSent?"rgba(255,255,255,.12)":T.hover};
+  if(isImage){
+    return(
+      <div style={wrapStyle}>
+        <div style={{...cardBase,width:220}}>
+          {att.dataUrl
+            ?<img src={att.dataUrl} alt={att.filename} style={{width:"100%",maxHeight:200,objectFit:"cover",display:"block"}}/>
+            :<div style={{background:isSent?"rgba(0,0,0,.18)":"rgba(0,0,0,.05)",display:"flex",alignItems:"center",justifyContent:"center",height:120,fontSize:48,userSelect:"none",flexDirection:"column",gap:6}}>
+                <span>🖼</span>
+                <span style={{fontSize:11,color:isSent?"rgba(255,255,255,.4)":"rgba(0,0,0,.3)"}}>プレビュー不可</span>
+              </div>
+          }
+          <div style={{padding:"6px 10px"}}>
+            <div style={{fontSize:12,color:isSent?"rgba(255,255,255,.9)":T.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{att.filename}</div>
+            {size&&<div style={{fontSize:11,color:isSent?"rgba(255,255,255,.5)":T.textTer}}>{size}</div>}
+          </div>
+        </div>
+      </div>
+    );
+  }
+  const fileColor=isPdf?"#EF4444":att.mimeType?.includes("sheet")||att.mimeType?.includes("excel")?"#10B981":att.mimeType?.includes("word")||att.mimeType?.includes("document")?"#3B82F6":"#6B7280";
+  return(
+    <div style={wrapStyle}>
+      <div style={{...cardBase,display:"flex",alignItems:"center",gap:10,padding:"8px 14px",minWidth:160,maxWidth:260}}>
+        <div style={{width:36,height:36,borderRadius:8,background:fileColor,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>{icon}</div>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{color:isSent?"rgba(255,255,255,.9)":T.text,fontSize:13,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{att.filename}</div>
+          {size&&<div style={{color:isSent?"rgba(255,255,255,.5)":T.textTer,fontSize:11}}>{size}</div>}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// チャットバブル
+const ChatBubble=({mail,isSent,isUnread,isStarred,onStar,T})=>{
+  const[showFull,setShowFull]=React.useState(false);
+  const{text:stripped,hasQuote}=stripQuoted(mail.body||mail.snippet||"");
+  const rawText=showFull?(mail.body||mail.snippet||""):stripped;
+  const attachments=mail.attachments||[];
+  const isPending=!!mail._optimistic;
+  const showTextBubble=!!(rawText||(!attachments.length));
+  return(
+    <div style={{marginBottom:12,opacity:isPending?0.65:1,transition:"opacity .3s"}}>
+      <div style={{display:"flex",flexDirection:isSent?"row-reverse":"row",alignItems:"flex-end",gap:8}}>
+        {!isSent&&<Avatar name={mail.fromName||mail.from} email={mail.from} size={32}/>}
+        <div style={{maxWidth:"72%"}}>
+          {!isSent&&<div style={{fontSize:11,color:T.textSec,marginBottom:3,fontWeight:500}}>{mail.fromName||mail.from}</div>}
+          {showTextBubble&&<div style={{background:isSent?"#4A5EDB":isUnread?T.unreadBubble:T.recvBubble,color:isSent?"#fff":T.text,
+            border:isUnread&&!isSent?"1.5px solid "+T.unreadBorder:"none",
+            borderRadius:isSent?"18px 18px 4px 18px":"18px 18px 18px 4px",
+            padding:"10px 14px",fontSize:13.5,lineHeight:1.65,whiteSpace:"pre-wrap",wordBreak:"break-word",
+            boxShadow:"0 1px 3px rgba(0,0,0,.08)"}}>
+            {rawText||" "}
+            {hasQuote&&<div onClick={()=>setShowFull(f=>!f)} style={{marginTop:8,fontSize:11,color:isSent?"rgba(255,255,255,.6)":T.textTer,cursor:"pointer",userSelect:"none"}}>{showFull?"▲ 引用を折りたたむ":"▼ 引用文を表示"}</div>}
+          </div>}
+          <div style={{display:"flex",alignItems:"center",gap:6,marginTop:4,justifyContent:isSent?"flex-end":"flex-start"}}>
+            <span style={{fontSize:11,color:T.textTer}}>{isPending?"送信中…":formatDate(mail.date)}</span>
+            {isUnread&&!isSent&&<span style={{fontSize:10,background:T.accent,color:"#fff",borderRadius:6,padding:"1px 5px"}}>未読</span>}
+            {!isPending&&<button onClick={()=>onStar(getMailKey(mail))} style={{background:"none",border:"none",cursor:"pointer",fontSize:14,color:isStarred?"#F59E0B":T.border,padding:0,lineHeight:1}}>{isStarred?"★":"☆"}</button>}
+          </div>
+        </div>
+        {isSent&&<div style={{width:32,height:32,borderRadius:"50%",background:T.highlight,color:T.accent,display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:700,flexShrink:0}}>自</div>}
+      </div>
+      {/* 添付ファイルを別バブルとして表示 */}
+      {attachments.map((att,i)=><AttachmentBubble key={i} att={att} isSent={isSent} T={T}/>)}
+    </div>
+  );
+};
+
+// 右クリックメニュー
+const ContextMenu=({x,y,thread,onClose,onStar,onMarkRead,onForward,onCreateTask,isStarred,allRead,T})=>{
+  React.useEffect(()=>{const h=()=>onClose();document.addEventListener('click',h);return()=>document.removeEventListener('click',h);},[]);
+  const items=[
+    {icon:"⭐",label:isStarred?"スターを外す":"スターを付ける",action:onStar},
+    {icon:allRead?"✉":"✅",label:allRead?"未読にする":"既読にする",action:onMarkRead},
+    {sep:true},
+    {icon:"→",label:"転送",action:onForward},
+    {sep:true},
+    {icon:"✓",label:"タスクを作成",action:onCreateTask},
+  ];
+  return(
+    <div className="ctx-menu" style={{left:x,top:y,background:T.surface,border:`1px solid ${T.border}`}} onClick={e=>e.stopPropagation()}>
+      {items.map((item,i)=>item.sep
+        ?<div key={i} className="ctx-sep" style={{background:T.border}}/>
+        :<div key={i} className="ctx-item" style={{color:T.text}} onClick={()=>{item.action();onClose();}}><span>{item.icon}</span>{item.label}</div>
+      )}
+    </div>
+  );
+};
+
+// クイックスヌーズ選択肢
+const SNOOZE_OPTIONS=[
+  {label:"明日の朝9時",   fn:()=>{const d=new Date();d.setDate(d.getDate()+1);d.setHours(9,0,0,0);return d.getTime();}},
+  {label:"今夜20時",     fn:()=>{const d=new Date();d.setHours(20,0,0,0);if(d<=Date.now())d.setDate(d.getDate()+1);return d.getTime();}},
+  {label:"3時間後",      fn:()=>Date.now()+3*3600000},
+  {label:"1週間後の朝",  fn:()=>{const d=new Date();d.setDate(d.getDate()+7);d.setHours(9,0,0,0);return d.getTime();}},
+];
+
+// タスクパネル
+const TaskPanel=({tasks,onClose,onAdd,onToggle,onDelete,onSnooze,T})=>{
+  const[newTask,setNewTask]=React.useState("");
+  const[snoozeOpen,setSnoozeOpen]=React.useState(null); // task id
+  const[customDate,setCustomDate]=React.useState("");
+  return(
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:2000}} onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={{background:T.surface,borderRadius:14,padding:24,width:460,maxWidth:"90vw",boxShadow:"0 24px 60px rgba(0,0,0,.3)",maxHeight:"80vh",display:"flex",flexDirection:"column",border:`1px solid ${T.border}`}}>
+        <div style={{display:"flex",justifyContent:"space-between",marginBottom:16}}>
+          <h3 style={{fontSize:16,fontWeight:700,color:T.text}}>✓ タスク</h3>
+          <button onClick={onClose} style={{background:"none",border:"none",fontSize:20,cursor:"pointer",color:T.textSec}}>✕</button>
+        </div>
+        <div style={{display:"flex",gap:8,marginBottom:12}}>
+          <input value={newTask} onChange={e=>setNewTask(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&newTask.trim()){onAdd(newTask.trim());setNewTask("");}}} placeholder="新しいタスク (Enterで確定)" style={{flex:1,border:`1px solid ${T.border}`,borderRadius:8,padding:"8px 12px",fontSize:14,outline:"none",background:T.inputBg,color:T.text}}/>
+          <button onClick={()=>{if(newTask.trim()){onAdd(newTask.trim());setNewTask("");}}} style={{padding:"8px 14px",borderRadius:8,border:"none",background:T.accent,color:"#fff",cursor:"pointer",fontWeight:600}}>追加</button>
+        </div>
+        <div style={{flex:1,overflowY:"auto"}}>
+          {tasks.length===0&&<div style={{textAlign:"center",color:T.textTer,fontSize:13,padding:20}}>タスクはありません</div>}
+          {tasks.map(t=>(
+            <div key={t.id} style={{padding:"10px 0",borderBottom:`1px solid ${T.borderFaint}`}}>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <button onClick={()=>onToggle(t.id)} style={{width:20,height:20,borderRadius:5,border:"2px solid",borderColor:t.done?"#10B981":T.border,background:t.done?"#10B981":"transparent",cursor:"pointer",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:12}}>{t.done?"✓":""}</button>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:14,color:t.done?T.textTer:T.text,textDecoration:t.done?"line-through":"none"}}>{t.title}</div>
+                  <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:2}}>
+                    {t.emailSubject&&<span style={{fontSize:11,color:T.textTer}}>📧 {t.emailSubject}</span>}
+                    {t.snoozeAt&&!t.snoozed&&<span style={{fontSize:11,color:"#F59E0B"}}>⏰ {new Date(t.snoozeAt).toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}</span>}
+                  </div>
+                </div>
+                {/* スヌーズボタン */}
+                {!t.done&&<button onClick={()=>setSnoozeOpen(snoozeOpen===t.id?null:t.id)} title="スヌーズ" style={{background:"none",border:"none",cursor:"pointer",fontSize:14,color:t.snoozeAt?"#F59E0B":T.textTer}}>⏰</button>}
+                <button onClick={()=>onDelete(t.id)} style={{background:"none",border:"none",cursor:"pointer",color:T.textTer,fontSize:16}}>×</button>
+              </div>
+              {/* スヌーズ選択パネル */}
+              {snoozeOpen===t.id&&(
+                <div style={{marginTop:8,marginLeft:28,background:T.surfaceAlt||T.hover,borderRadius:8,padding:"10px 12px"}}>
+                  <div style={{fontSize:12,fontWeight:600,color:T.textSec,marginBottom:6}}>スヌーズ時刻を選択</div>
+                  <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:8}}>
+                    {SNOOZE_OPTIONS.map(opt=>(
+                      <button key={opt.label} onClick={()=>{onSnooze(t.id,opt.fn());setSnoozeOpen(null);}}
+                        style={{padding:"4px 10px",borderRadius:6,border:`1px solid ${T.border}`,background:T.surface,color:T.text,fontSize:12,cursor:"pointer"}}>
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{display:"flex",gap:6}}>
+                    <input type="datetime-local" value={customDate} onChange={e=>setCustomDate(e.target.value)}
+                      style={{flex:1,border:`1px solid ${T.border}`,borderRadius:6,padding:"4px 8px",fontSize:12,background:T.inputBg,color:T.text,outline:"none"}}/>
+                    <button onClick={()=>{if(customDate){onSnooze(t.id,new Date(customDate).getTime());setSnoozeOpen(null);}}}
+                      style={{padding:"4px 10px",borderRadius:6,border:"none",background:T.accent,color:"#fff",fontSize:12,cursor:"pointer"}}>設定</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// 作成モーダル
+const ComposeModal=({mode,initialTo,initialSubject,initialBody,initialAccId,onSend,onClose,T})=>{
+  const[to,setTo]=React.useState(initialTo||"");
+  const[cc,setCc]=React.useState("");const[bcc,setBcc]=React.useState("");
+  const[subject,setSub]=React.useState(initialSubject||"");
+  const[body,setBody]=React.useState(initialBody||"");
+  const[accId,setAccId]=React.useState(initialAccId||CONFIG.ACCOUNTS[0]?.id||"");
+  const[showCc,setShowCc]=React.useState(false);
+  const[sending,setSending]=React.useState(false);const[err,setErr]=React.useState("");
+  const[files,setFiles]=React.useState([]);
+  const fileRef=React.useRef(null);
+  const modeLabel={new:"新規作成",reply:"返信",replyAll:"全員に返信",forward:"転送"}[mode]||"作成";
+  const inp={width:"100%",border:`1px solid ${T.border}`,borderRadius:8,padding:"8px 12px",fontSize:14,outline:"none",boxSizing:"border-box",marginBottom:8,fontFamily:"inherit",background:T.inputBg,color:T.text};
+  const submit=async()=>{
+    if(!to||!subject||!body){setErr("宛先・件名・本文は必須です");return;}
+    setSending(true);setErr("");
+    try{
+      const acc=CONFIG.ACCOUNTS.find(a=>a.id===accId);
+      const attachments=await Promise.all(files.map(async f=>({
+        filename:f.name,mimeType:f.type||'application/octet-stream',
+        size:f.size,content:await fileToBase64(f),
+      })));
+      await onSend({from:acc?.email,to,cc,bcc,subject,body,accountId:accId,attachments});
+      onClose();
+    }
+    catch(e){setErr(e.message);}finally{setSending(false);}
+  };
+  return(
+    <div onClick={e=>e.target===e.currentTarget&&onClose()} style={{position:"fixed",inset:0,background:"rgba(0,0,0,.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}>
+      <div style={{background:T.surface,borderRadius:14,padding:24,width:580,maxWidth:"92vw",boxShadow:"0 24px 60px rgba(0,0,0,.3)",display:"flex",flexDirection:"column",maxHeight:"90vh",border:`1px solid ${T.border}`}}>
+        <div style={{display:"flex",justifyContent:"space-between",marginBottom:12}}>
+          <h3 style={{fontSize:16,fontWeight:700,color:T.text}}>✉ {modeLabel}</h3>
+          <button onClick={onClose} style={{background:"none",border:"none",fontSize:20,cursor:"pointer",color:T.textSec}}>✕</button>
+        </div>
+        <select value={accId} onChange={e=>setAccId(e.target.value)} style={inp}>
+          {CONFIG.ACCOUNTS.map(a=><option key={a.id} value={a.id}>{a.name} ({a.email})</option>)}
+        </select>
+        <input placeholder="宛先 (To)" value={to} onChange={e=>setTo(e.target.value)} style={inp}/>
+        {showCc&&<><input placeholder="CC" value={cc} onChange={e=>setCc(e.target.value)} style={inp}/><input placeholder="BCC" value={bcc} onChange={e=>setBcc(e.target.value)} style={inp}/></>}
+        <button onClick={()=>setShowCc(v=>!v)} style={{background:"none",border:"none",color:T.textSec,fontSize:12,textAlign:"left",cursor:"pointer",marginBottom:6,padding:0}}>{showCc?"▲ CC/BCC を非表示":"▼ CC/BCC を追加"}</button>
+        <input placeholder="件名" value={subject} onChange={e=>setSub(e.target.value)} style={inp}/>
+        <textarea placeholder="本文..." value={body} onChange={e=>setBody(e.target.value)} rows={8} style={{...inp,resize:"vertical",flex:1,marginBottom:8}}/>
+        <div style={{marginBottom:8}}>
+          <input ref={fileRef} type="file" multiple style={{display:"none"}} onChange={e=>setFiles(f=>[...f,...Array.from(e.target.files)])}/>
+          <button onClick={()=>fileRef.current?.click()} style={{fontSize:12,color:T.accent,background:"none",border:`1px solid ${T.border}`,borderRadius:7,padding:"5px 12px",cursor:"pointer"}}>📎 ファイルを添付</button>
+          {files.map((f,i)=><span key={i} style={{marginLeft:6,fontSize:12,background:T.hover,padding:"3px 8px",borderRadius:6,color:T.text}}>{f.name}<button onClick={()=>setFiles(fs=>fs.filter((_,j)=>j!==i))} style={{background:"none",border:"none",cursor:"pointer",color:T.textTer,fontSize:11}}>×</button></span>)}
+        </div>
+        {err&&<div style={{color:"#EF4444",fontSize:13,marginBottom:8}}>{err}</div>}
+        <div style={{display:"flex",justifyContent:"flex-end",gap:8}}>
+          <button onClick={onClose} style={{padding:"8px 16px",borderRadius:8,border:`1px solid ${T.border}`,background:T.surface,cursor:"pointer",color:T.text}}>キャンセル</button>
+          <button onClick={submit} disabled={sending} style={{padding:"8px 20px",borderRadius:8,border:"none",background:T.accent,color:"#fff",fontWeight:600,cursor:"pointer"}}>{sending?"送信中...":"送信"}</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════════
+//  メインアプリ
+// ═══════════════════════════════════════════════
+// ── トーストコンポーネント ──
+const Toast=({toasts})=>(
+  <div style={{position:'fixed',bottom:24,right:24,zIndex:9999,display:'flex',flexDirection:'column',gap:8,pointerEvents:'none'}}>
+    {toasts.map(t=>(
+      <div key={t.id} style={{
+        background:t.type==='error'?'#EF4444':t.type==='success'?'#10B981':t.type==='warn'?'#F59E0B':'#4A5EDB',
+        color:'#fff',padding:'10px 18px',borderRadius:10,fontSize:13,fontWeight:500,
+        boxShadow:'0 4px 20px rgba(0,0,0,.25)',maxWidth:320,
+        animation:'slideUp .25s ease',
+      }}>{t.msg}</div>
+    ))}
+  </div>
+);
+
+function MailChat(){
+  const[darkMode,setDarkMode]=React.useState(()=>lsGet(LS_DARK,false));
+  const T=darkMode?DARK:LIGHT;
+
+  // モバイル対応
+  const[isMobile,setIsMobile]=React.useState(()=>window.innerWidth<768);
+  const[showSidebar,setShowSidebar]=React.useState(true);
+  React.useEffect(()=>{
+    const h=()=>setIsMobile(window.innerWidth<768);
+    window.addEventListener('resize',h);
+    return()=>window.removeEventListener('resize',h);
+  },[]);
+
+  // トースト
+  const[toasts,setToasts]=React.useState([]);
+  const toast=(msg,type='info')=>{
+    const id=Date.now();
+    setToasts(prev=>[...prev,{id,msg,type}]);
+    setTimeout(()=>setToasts(prev=>prev.filter(t=>t.id!==id)),3500);
+  };
+
+  React.useEffect(()=>{
+    document.body.style.background=T.bg;
+    document.body.dataset.dark=darkMode?"true":"false";
+    lsSet(LS_DARK,darkMode);
+  },[darkMode,T.bg]);
+
+  const mkBtn=(bg,sm=false)=>({padding:sm?"4px 10px":"8px 14px",borderRadius:8,border:"none",background:bg||T.accent,color:"#fff",fontSize:sm?12:13,fontWeight:600,cursor:"pointer",display:"inline-flex",alignItems:"center",gap:4});
+
+  const[emails,       setEmails]       =React.useState([]);
+  const[selectedThreadId,setSelectedThreadId]=React.useState(null);
+  const[activeAcc,    setActiveAcc]    =React.useState("all");
+  const[filter,       setFilter]       =React.useState("all");
+  const[sortBy,       setSortBy]       =React.useState("date");
+  const[showActMenu,  setShowActMenu]  =React.useState(false);
+  const[searchQ,      setSearchQ]      =React.useState("");
+  const[loading,      setLoading]      =React.useState(false);
+  const[fetchError,   setFetchError]   =React.useState("");
+  const[n8nOnline,    setN8nOnline]    =React.useState(null);
+  const[summary,      setSummary]      =React.useState("");
+  const[sumLoading,   setSumLoading]   =React.useState(false);
+  const[replies,      setReplies]      =React.useState([]);
+  const[repLoading,   setRepLoading]   =React.useState(false);
+  const[spamResult,   setSpamResult]   =React.useState(null);
+  const[spamLoading,  setSpamLoading]  =React.useState(false);
+  const[summaryCache, setSummaryCache] =React.useState(()=>lsGet(LS_SUMM,{}));
+  const[styleProfile, setStyleProfile] =React.useState(null);
+  const[styleLoading, setStyleLoading] =React.useState(false);
+  const[styleError,   setStyleError]   =React.useState("");
+  const[showProfile,  setShowProfile]  =React.useState(false);
+  const[notionSyncing,setNotionSyncing]=React.useState(false);
+  const[composeMode,  setComposeMode]  =React.useState(null);
+  // ボトム入力バー（Spike スタイル）
+  const[replyText,    setReplyText]    =React.useState("");
+  const[replyFiles,   setReplyFiles]   =React.useState([]);
+  const[replyFromAccId,setReplyFromAccId]=React.useState(null); // null=自動検出
+  const replyInputRef = React.useRef(null);
+  const replyFileRef  = React.useRef(null);
+  const[showTasks,    setShowTasks]    =React.useState(false);
+  const[tasks,        setTasks]        =React.useState(()=>lsGet(LS_TASKS,[]));
+  const[ctxMenu,      setCtxMenu]      =React.useState(null);
+  const[starred,      setStarred]      =React.useState(()=>new Set(lsGet(LS_STARRED,[])));
+  const[readSet,      setReadSet]      =React.useState(()=>new Set(lsGet(LS_READ,[])));
+  const chatBottomRef=React.useRef(null);
+
+  const toggleStar=(id)=>setStarred(prev=>{const n=new Set(prev);n.has(id)?n.delete(id):n.add(id);lsSet(LS_STARRED,[...n]);return n;});
+  const markRead=(ids)=>setReadSet(prev=>{const n=new Set(prev);ids.forEach(id=>n.add(id));lsSet(LS_READ,[...n]);return n;});
+  const markUnread=(ids)=>setReadSet(prev=>{const n=new Set(prev);ids.forEach(id=>n.delete(id));lsSet(LS_READ,[...n]);return n;});
+  const isRead=(mail)=>mail.read||readSet.has(getMailKey(mail));
+
+  const addTask=(title,sub="",snoozeAt=null)=>{
+    const t={id:Date.now(),title,emailSubject:sub,done:false,snoozeAt,snoozed:false,createdAt:new Date().toISOString()};
+    setTasks(prev=>{const n=[t,...prev];lsSet(LS_TASKS,n);return n;});
+    if(snoozeAt) toast(`⏰ スヌーズ設定: ${new Date(snoozeAt).toLocaleString('ja-JP')}`,'info');
+  };
+  const toggleTask=(id)=>setTasks(prev=>{const n=prev.map(t=>t.id===id?{...t,done:!t.done,snoozed:false}:t);lsSet(LS_TASKS,n);return n;});
+  const deleteTask=(id)=>setTasks(prev=>{const n=prev.filter(t=>t.id!==id);lsSet(LS_TASKS,n);return n;});
+  const snoozeTask=(id,at)=>{
+    // スヌーズ初回設定時に通知許可を要求（価値を見せてから）
+    if('Notification' in window && Notification.permission==='default'){
+      Notification.requestPermission();
+    }
+    setTasks(prev=>{const n=prev.map(t=>t.id===id?{...t,snoozeAt:at,snoozed:false}:t);lsSet(LS_TASKS,n);toast(`⏰ スヌーズ: ${new Date(at).toLocaleString('ja-JP')}`,'info');return n;});
+  };
+
+  // スヌーズ監視（毎分チェック）
+  React.useEffect(()=>{
+    const check=()=>{
+      const now=Date.now();
+      const due=tasks.filter(t=>t.snoozeAt&&!t.done&&!t.snoozed&&new Date(t.snoozeAt).getTime()<=now);
+      if(!due.length)return;
+      due.forEach(t=>{
+        toast(`⏰ スヌーズ: ${t.title}`,'warn');
+        if('Notification' in window && Notification.permission==='granted'){
+          new Notification('MailChat スヌーズ',{body:t.title,icon:'/manifest.json'});
+        }
+      });
+      setTasks(prev=>{const n=prev.map(t=>due.some(d=>d.id===t.id)?{...t,snoozed:true,snoozeAt:null}:t);lsSet(LS_TASKS,n);return n;});
+    };
+    check(); // 即時チェック
+    const iv=setInterval(check,60000);
+    return()=>clearInterval(iv);
+  },[tasks]); // eslint-disable-line
+
+  // 通知許可はスヌーズ初回設定時に要求（起動直後に出さない）
+
+  const handleFetch=async()=>{
+    setLoading(true);setFetchError("");
+    try{
+      const ids=activeAcc==="all"?CONFIG.ACCOUNTS.map(a=>a.id):[activeAcc];
+      const results=await Promise.all(ids.map(id=>fetchEmails(id).then(mails=>mails.map(m=>({...m,accountId:m.accountId||id})))));
+      const seen=new Set();
+      const all=results.flat().filter(m=>{const k=getMailKey(m);if(seen.has(k))return false;seen.add(k);return true;});
+      setEmails(all);
+      toast(`${all.length}件取得しました`,'success');
+    }catch(e){
+      setFetchError(e.message);
+      toast(`取得失敗: ${e.message}`,'error');
+    }finally{setLoading(false);}
+  };
+
+  const handleLearnStyle=async()=>{
+    const sent=emails.filter(m=>m.isSent);
+    if(!sent.length){setStyleError("送信済みメールがありません");toast("送信済みメールがありません",'warn');return;}
+    setStyleLoading(true);setStyleError("");
+    toast(`${Math.min(sent.length,CONFIG.STYLE_SAMPLE_COUNT)}件のメールを学習中...`,'info');
+    try{
+      const raw=await analyzeStyle(sent);
+      const p={...raw,sampleCount:Math.min(sent.length,CONFIG.STYLE_SAMPLE_COUNT),updatedAt:new Date().toISOString()};
+      setStyleProfile(p);lsSet(LS_PROFILE,p);
+      toast('文体学習が完了しました ✓','success');
+      setNotionSyncing(true);
+      saveProfileNotion(p).catch(e=>console.warn(e)).finally(()=>setNotionSyncing(false));
+    }catch(e){setStyleError(`学習失敗: ${e.message}`);toast(`学習失敗: ${e.message}`,'error');}
+    finally{setStyleLoading(false);}
+  };
+
+  React.useEffect(()=>{
+    pingN8n().then(online=>{setN8nOnline(online);if(online)handleFetch();});
+    const p=lsGet(LS_PROFILE,null);if(p)setStyleProfile(p);
+  },[]); // eslint-disable-line
+
+  React.useEffect(()=>{
+    if(!selThread)return;
+    markRead(selThread.mails.map(m=>getMailKey(m)));
+    setReplies([]);setSpamResult(null);setReplyText("");setReplyFiles([]);setReplyFromAccId(null);
+    if(summaryCache[selThread.id]){setSummary(summaryCache[selThread.id]);setSumLoading(false);}
+    else{
+      setSummary("");setSumLoading(true);
+      summarizeThread(selThread.mails).then(s=>{setSummary(s);setSummaryCache(prev=>{const n={...prev,[selThread.id]:s};lsSet(LS_SUMM,n);return n;});}).catch(e=>setSummary(`要約失敗: ${e.message}`)).finally(()=>setSumLoading(false));
+    }
+    requestAnimationFrame(()=>chatBottomRef.current?.scrollIntoView({behavior:'instant'}));
+    // モバイル: スレッド選択でメインパネルに切り替え
+    if(isMobile) setShowSidebar(false);
+  },[selectedThreadId,isMobile]); // eslint-disable-line
+
+  // ボトム入力バーからの送信
+  const handleBottomSend=async()=>{
+    if(!replyText.trim()&&replyFiles.length===0)return;
+    const replyTo=findReplyTarget(selThread);
+    const acc=(replyFromAccId?CONFIG.ACCOUNTS.find(a=>a.id===replyFromAccId):null)||findFromAccount(selThread);
+    const lastMail=selThread.mails[selThread.mails.length-1];
+    const bodySnap=replyText;
+    const filesSnap=[...replyFiles];
+    const optId="opt_"+Date.now();
+    const optMail={
+      messageId:optId,id:optId,
+      from:acc?.email||"",fromName:"自分",
+      to:replyTo,subject:"Re: "+selThread.subject,
+      body:bodySnap,snippet:bodySnap.slice(0,120),
+      date:new Date().toISOString(),read:true,isSent:true,
+      accountId:acc?.id||selThread.accountId,
+      attachments:filesSnap.map(f=>({filename:f.name,mimeType:f.type||"application/octet-stream",size:f.size})),
+      _optimistic:true,
+    };
+    setEmails(prev=>[...prev,optMail]);
+    setReplyText("");setReplyFiles([]);
+    requestAnimationFrame(()=>chatBottomRef.current?.scrollIntoView({behavior:'smooth'}));
+    try{
+      const attachments=await Promise.all(filesSnap.map(async f=>({
+        filename:f.name,
+        mimeType:f.type||"application/octet-stream",
+        size:f.size,
+        content:await fileToBase64(f),
+      })));
+      const result=await sendEmailAPI({
+        from:acc?.email,to:replyTo,
+        subject:"Re: "+selThread.subject,
+        body:bodySnap,
+        accountId:acc?.id||selThread.accountId,
+        inReplyTo:lastMail.messageId||lastMail.id||"",
+        references:(lastMail.references||lastMail.messageId||lastMail.id||""),
+        attachments,
+      });
+      const confirmed=result?.sentMessage
+        ?{...result.sentMessage,isSent:true,read:true,_optimistic:false,accountId:acc?.id||selThread.accountId}
+        :{...optMail,_optimistic:false};
+      setEmails(prev=>prev.map(e=>e.messageId===optId?confirmed:e));
+      toast("送信しました ✓",'success');
+    }catch(e){
+      setEmails(prev=>prev.filter(e=>e.messageId!==optId));
+      toast("送信失敗: "+e.message,'error');
+    }
+  };
+
+  const openCompose=(mode,thread)=>{
+    const mail=thread?.mails[thread.mails.length-1];
+    const replyTo=thread?findReplyTarget(thread):"";
+    const fromAcc=thread?findFromAccount(thread):null;
+    if(mode==="reply")      setComposeMode({mode,initialTo:replyTo,initialSubject:"Re: "+(thread?.subject||""),initialBody:"",initialAccId:fromAcc?.id});
+    else if(mode==="replyAll") setComposeMode({mode,initialTo:replyTo,initialSubject:"Re: "+(thread?.subject||""),initialBody:"",initialAccId:fromAcc?.id});
+    else if(mode==="forward") setComposeMode({mode,initialTo:"",initialSubject:"Fwd: "+(thread?.subject||""),initialBody:"\n\n--- 転送メッセージ ---\nFrom: "+(mail?.from||"")+"\nDate: "+(mail?.date||"")+"\n\n"+(mail?.body||""),initialAccId:fromAcc?.id});
+    else setComposeMode({mode:"new",initialTo:"",initialSubject:"",initialBody:"",initialAccId:null});
+  };
+
+  // フィルタ/ソート
+  let threads=groupByThread(emails.filter(m=>activeAcc==="all"||m.accountId===activeAcc));
+  // selectedThreadId から毎 render 導出 → emails 変化（楽観的UI等）が即反映
+  const selThread=threads.find(t=>t.id===selectedThreadId)||null;
+  if(searchQ.trim()){const q=searchQ.toLowerCase();threads=threads.filter(t=>t.subject.toLowerCase().includes(q)||t.mails.some(m=>(m.from||"").toLowerCase().includes(q)||(m.fromName||"").toLowerCase().includes(q)||(m.body||"").toLowerCase().includes(q)));}
+  threads=threads.filter(t=>{
+    if(filter==="unread")return t.mails.some(m=>!isRead(m)&&!isSelf(m.from));
+    if(filter==="starred")return t.mails.some(m=>starred.has(getMailKey(m)));
+    if(filter==="attach")return t.hasAttach;
+    return true;
+  });
+  if(sortBy==="sender")threads.sort((a,b)=>{const ca=getContact(a),cb=getContact(b);return ca.name.localeCompare(cb.name,"ja");});
+  else if(sortBy==="unread")threads.sort((a,b)=>(b.unread-a.unread)||new Date(b.latest.date)-new Date(a.latest.date));
+
+  const sentCount=emails.filter(m=>m.isSent).length;
+  const unreadCount=threads.filter(t=>t.mails.some(m=>!isRead(m)&&!isSelf(m.from))).length;
+  const pendingTasks=tasks.filter(t=>!t.done).length;
+  // ボトムバー用: 返信先と送信元アカウントを事前計算（selThread が null の場合はデフォルト値）
+  const bottomReplyTo=selThread?findReplyTarget(selThread):"";
+  const bottomFromAcc=selThread
+    ?((replyFromAccId?CONFIG.ACCOUNTS.find(a=>a.id===replyFromAccId):null)||findFromAccount(selThread)||CONFIG.ACCOUNTS[0])
+    :CONFIG.ACCOUNTS[0];
+
+  return(
+    <div style={{display:"flex",height:"100vh",fontFamily:"-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif",color:T.text,overflow:"hidden",background:T.bg}} onClick={()=>ctxMenu&&setCtxMenu(null)}>
+
+      <Toast toasts={toasts}/>
+
+      {/* ══ サイドバー（モバイルは全画面切り替え）══ */}
+      {(!isMobile||showSidebar)&&
+      <div style={{width:isMobile?'100%':310,flexShrink:0,borderRight:`1px solid ${T.border}`,display:"flex",flexDirection:"column",background:T.sidebar,boxShadow:"2px 0 8px rgba(0,0,0,.06)"}}>
+
+        {/* ヘッダー */}
+        <div style={{padding:"12px 14px 8px",borderBottom:`1px solid ${T.borderFaint}`}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+            <span style={{fontWeight:800,fontSize:19,color:T.accent}}>MailChat</span>
+            <div style={{display:"flex",alignItems:"center",gap:6}}>
+              <button onClick={()=>setShowTasks(true)} title="タスク" style={{background:pendingTasks?T.highlight:"none",border:"none",cursor:"pointer",fontSize:15,borderRadius:7,padding:"3px 7px",color:pendingTasks?T.accent:T.textSec}}>
+                ✓{pendingTasks>0&&<span style={{fontSize:10,background:T.accent,color:"#fff",borderRadius:"50%",padding:"0 4px",marginLeft:2}}>{pendingTasks}</span>}
+              </button>
+              {/* ダークモード切り替え */}
+              <button onClick={()=>setDarkMode(d=>!d)} title={darkMode?"ライトモード":"ダークモード"} style={{background:"none",border:"none",cursor:"pointer",fontSize:16,borderRadius:7,padding:"3px 6px",color:T.textSec}}>
+                {darkMode?"☀️":"🌙"}
+              </button>
+              <span style={{fontSize:11,color:T.textTer,display:"flex",alignItems:"center"}}>n8n<Dot on={!!n8nOnline}/></span>
+            </div>
+          </div>
+          <div style={{display:"flex",gap:5,marginBottom:6}}>
+            <button onClick={()=>openCompose("new",null)} style={{...mkBtn(T.accent),flex:1,justifyContent:"center",fontSize:12}}>✉ 作成</button>
+            <button onClick={handleFetch} disabled={loading} style={{...mkBtn("#6B7280"),flex:1,justifyContent:"center",fontSize:12}}>
+              {loading?<><span className="spinner"/> 取得中</>:"⟳ 取得"}
+            </button>
+          </div>
+          {/* 検索 */}
+          <div style={{position:"relative"}}>
+            <span style={{position:"absolute",left:10,top:"50%",transform:"translateY(-50%)",color:T.textTer,fontSize:13}}>🔍</span>
+            <input value={searchQ} onChange={e=>setSearchQ(e.target.value)} placeholder="メールを検索..." style={{width:"100%",border:`1px solid ${T.border}`,borderRadius:8,padding:"7px 30px 7px 32px",fontSize:13,outline:"none",boxSizing:"border-box",background:T.inputBg,color:T.text}}/>
+            {searchQ&&<button onClick={()=>setSearchQ("")} style={{position:"absolute",right:8,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",cursor:"pointer",color:T.textTer,fontSize:16}}>×</button>}
+          </div>
+          {fetchError&&<div style={{marginTop:6,padding:"5px 8px",background:"#FEF2F2",borderRadius:6,fontSize:12,color:"#EF4444"}}>{fetchError}</div>}
+        </div>
+
+        {/* 文体学習 */}
+        <div style={{padding:"8px 14px",borderBottom:`1px solid ${T.borderFaint}`,background:T.styleBg}}>
+          <button onClick={handleLearnStyle} disabled={styleLoading||emails.length===0} style={{width:"100%",padding:"7px 12px",borderRadius:8,border:"none",background:styleLoading?"#9B59D9":emails.length===0?"#9CA3AF":"#7C3AED",color:"#fff",fontSize:12,fontWeight:600,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:5,marginBottom:styleProfile?5:0}}>
+            {styleLoading
+              ?<><span className="spinner"/> 文体を分析中... ({sentCount}件)</>
+              :styleProfile
+                ?`🧠 再学習 (${sentCount}件)`
+                :sentCount>0?`🧠 文体を学習する (${sentCount}件)`:"🧠 文体学習"}
+          </button>
+          {styleProfile&&<div style={{background:T.styleChip,borderRadius:7,padding:"6px 10px"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+              <div>
+                <div style={{fontSize:11,color:"#7C3AED",fontWeight:700}}>✓ 学習済み</div>
+                <div style={{fontSize:11,color:"#9CA3AF",marginTop:1}}>{styleProfile.tone} · {styleProfile.sampleCount}件 · {styleProfile.updatedAt?new Date(styleProfile.updatedAt).toLocaleDateString("ja-JP"):""}</div>
+              </div>
+              <button onClick={()=>setShowProfile(true)} style={{fontSize:11,color:"#7C3AED",background:"none",border:"none",cursor:"pointer",flexShrink:0}}>詳細</button>
+            </div>
+          </div>}
+          {styleError&&<div style={{fontSize:11,color:"#EF4444",marginTop:4}}>{styleError}</div>}
+        </div>
+
+        {/* フィルタ・ソート */}
+        <div style={{padding:"6px 14px",borderBottom:`1px solid ${T.borderFaint}`}}>
+          <div style={{display:"flex",gap:3,marginBottom:5}}>
+            {[["all","すべて"],["unread","未読"+(unreadCount>0?" ("+unreadCount+")":"")],["starred","⭐"],["attach","📎"]].map(([k,label])=>(
+              <button key={k} onClick={()=>setFilter(k)} style={{flex:1,padding:"4px 3px",borderRadius:7,border:"none",background:filter===k?T.highlight:T.hover,color:filter===k?T.accent:T.textSec,fontSize:11,fontWeight:filter===k?700:400,cursor:"pointer"}}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:5,marginBottom:4}}>
+            <span style={{fontSize:11,color:T.textTer}}>並び替え:</span>
+            <select value={sortBy} onChange={e=>setSortBy(e.target.value)} style={{fontSize:11,border:"none",background:"none",color:T.textSec,cursor:"pointer",outline:"none"}}>
+              <option value="date">日付順</option><option value="sender">送信者順</option><option value="unread">未読優先</option>
+            </select>
+          </div>
+          <div style={{display:"flex",gap:4}}>
+            {[{id:"all",name:"全て",color:"#6B7280"},...CONFIG.ACCOUNTS].map(a=>(
+              <button key={a.id} onClick={()=>setActiveAcc(a.id)} style={{padding:"2px 8px",borderRadius:6,border:"none",background:activeAcc===a.id?a.color+"22":"none",color:activeAcc===a.id?a.color:T.textSec,fontSize:11,fontWeight:activeAcc===a.id?700:400,cursor:"pointer"}}>
+                {a.name}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* スレッドリスト */}
+        <div style={{flex:1,overflowY:"auto"}}>
+          {threads.length===0
+            ?<div style={{padding:24,textAlign:"center",color:T.textTer,fontSize:13,lineHeight:1.8}}>
+                {loading?"読み込み中...":searchQ?"「"+searchQ+"」は見つかりません":"メールがありません"}
+              </div>
+            :(()=>{let lastGroup=null;return threads.map(t=>{
+              const contact=getContact(t);
+              const isSel=selectedThreadId===t.id;
+              const hasUnread=t.mails.some(m=>!isRead(m)&&!isSelf(m.from));
+              const isStarredT=t.mails.some(m=>starred.has(getMailKey(m)));
+              const acc=CONFIG.ACCOUNTS.find(a=>a.id===t.accountId);
+              const grp=getDateGroup(t.latest?.date);
+              const showGrp=grp!==lastGroup;if(showGrp)lastGroup=grp;
+              const acCol=acc?.color||T.accent;
+              return(
+                <React.Fragment key={t.id}>
+                {showGrp&&<div style={{padding:"6px 14px 4px",fontSize:11,fontWeight:700,color:T.textTer,background:T.sidebar,letterSpacing:".05em",textTransform:"uppercase",borderBottom:"1px solid "+T.borderFaint}}>{grp}</div>}
+                <div
+                  onClick={()=>setSelectedThreadId(t.id)}
+                  onContextMenu={e=>{e.preventDefault();setCtxMenu({x:e.clientX,y:e.clientY,thread:t});}}
+                  style={{padding:"10px 14px",cursor:"pointer",borderBottom:`1px solid ${T.borderFaint}`,
+                    background:isSel?T.highlight:hasUnread?T.threadHover:T.sidebar,
+                    borderLeft:"3px solid "+(isSel?acCol:hasUnread?acCol+"44":"transparent"),transition:"background .1s"}}
+                >
+                  <div style={{display:"flex",gap:10,alignItems:"flex-start"}}>
+                    <div style={{position:"relative",flexShrink:0}}>
+                      <Avatar name={contact.name} email={contact.email} size={40}/>
+                      {hasUnread&&<span style={{position:"absolute",top:-2,right:-2,width:10,height:10,borderRadius:"50%",background:acCol,border:"2px solid "+T.sidebar}}/>}
+                    </div>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:2}}>
+                        <span style={{fontSize:13,fontWeight:hasUnread?700:500,color:T.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:140}}>
+                          {contact.name}
+                        </span>
+                        <div style={{display:"flex",alignItems:"center",gap:4,flexShrink:0}}>
+                          {isStarredT&&<span style={{fontSize:12,color:"#F59E0B"}}>★</span>}
+                          {t.hasAttach&&<span style={{fontSize:11,color:T.textTer}}>📎</span>}
+                          <span style={{fontSize:11,color:hasUnread?T.accent:T.textTer,fontWeight:hasUnread?600:400}}>{formatDate(t.latest?.date)}</span>
+                        </div>
+                      </div>
+                      <div style={{fontSize:12,color:T.textSec,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",marginBottom:2}}>
+                        {t.subject}{t.mails.length>1&&<span style={{fontSize:11,color:T.textTer,marginLeft:4}}>({t.mails.length})</span>}
+                      </div>
+                      <div style={{fontSize:12,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:summaryCache[t.id]?"#4B90D9":T.textTer}}>
+                        {summaryCache[t.id]?<span>📝 {summaryCache[t.id]}</span>:<span>{t.latest?.isSent?"自分: ":""}{t.latest?.snippet||""}</span>}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                </React.Fragment>
+              );
+            })})()
+          }
+        </div>
+      </div>}
+
+      {/* ══ メインパネル（モバイルはスレッド選択時のみ全画面表示）══ */}
+      {(!isMobile||!showSidebar)&&(!selThread
+        ?<div style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",color:T.textTer,gap:8,background:T.bg}}>
+            <div style={{fontSize:48}}>💬</div>
+            <div style={{fontSize:15}}>{loading?"メールを取得中...":"スレッドを選択してください"}</div>
+          </div>
+        :(()=>{
+          const contact=getContact(selThread);
+          const acc=CONFIG.ACCOUNTS.find(a=>a.id===selThread.accountId);
+          const lastMail=selThread.mails[selThread.mails.length-1];
+          return(
+            <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",background:T.bg}}>
+
+              {/* ヘッダー */}
+              <div style={{padding:"12px 20px",borderBottom:`1px solid ${T.border}`,background:T.surface,boxShadow:"0 1px 3px rgba(0,0,0,.06)"}}>
+                {/* モバイル: 戻るボタン */}
+                {isMobile&&<button onClick={()=>setShowSidebar(true)} style={{display:"flex",alignItems:"center",gap:4,background:"none",border:"none",color:T.accent,fontSize:14,fontWeight:600,cursor:"pointer",marginBottom:8,padding:0}}>
+                  ← スレッド一覧
+                </button>}
+                <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:8}}>
+                  <Avatar name={contact.name} email={contact.email} size={40}/>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:16,fontWeight:700,color:T.text}}>{contact.name}</div>
+                    <div style={{fontSize:12,color:T.textSec}}>{selThread.subject}</div>
+                  </div>
+                  <span style={{fontSize:12,background:(acc?.color||T.accent)+"22",color:acc?.color||T.accent,padding:"3px 10px",borderRadius:20,fontWeight:500}}>{acc?.name}</span>
+                </div>
+                {(sumLoading||summary)&&<div style={{fontSize:13,color:T.textSec,background:T.summaryBg,borderRadius:8,padding:"8px 12px",marginBottom:8}}>
+                  {sumLoading?<span style={{color:T.textTer}}>AI 要約を生成中...</span>:<span>📝 {summary}</span>}
+                </div>}
+                {spamResult&&<div style={{fontSize:13,background:T.summaryBg,borderRadius:8,padding:"7px 12px",marginBottom:8,display:"inline-block"}}>
+                  スパムスコア: <strong>{spamResult.score}</strong><SpamBadge verdict={spamResult.verdict}/>
+                  <span style={{color:T.textSec,marginLeft:8}}>{spamResult.reason}</span>
+                </div>}
+                <div style={{display:"flex",gap:6,alignItems:"center",position:"relative"}}>
+                  <button onClick={()=>openCompose("reply",selThread)} style={mkBtn(T.accent)}>↩ 返信</button>
+                  <button onClick={()=>openCompose("replyAll",selThread)} style={mkBtn("#6B7280")}>↩↩ 全返信</button>
+                  <button onClick={()=>openCompose("forward",selThread)} style={mkBtn("#6B7280")}>→ 転送</button>
+                  <div style={{position:"relative"}}>
+                    <button onClick={()=>setShowActMenu(v=>!v)} style={{...mkBtn(T.textTer),background:T.hover,color:T.textSec,border:"1px solid "+T.border}}>⋯</button>
+                    {showActMenu&&<div onClick={()=>setShowActMenu(false)} style={{position:"fixed",inset:0,zIndex:199}}/>}
+                    {showActMenu&&<div style={{position:"absolute",top:"110%",right:0,zIndex:200,background:T.surface,border:"1px solid "+T.border,borderRadius:10,boxShadow:"0 8px 24px rgba(0,0,0,.15)",minWidth:170,overflow:"hidden"}}>
+                      <div onClick={()=>{setShowActMenu(false);setRepLoading(true);generateReplies(lastMail,styleProfile).then(r=>setReplies(r)).catch(e=>setReplies([{label:"エラー",body:e.message}])).finally(()=>setRepLoading(false));}}
+                        style={{padding:"10px 14px",fontSize:13,cursor:"pointer",color:T.text,display:"flex",gap:8,alignItems:"center"}}
+                        onMouseEnter={e=>e.currentTarget.style.background=T.hover} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                        {repLoading?<><span className="spinner"/>生成中</>:<>✨ AI返信案</>}
+                      </div>
+                      <div style={{height:1,background:T.border}}/>
+                      <div onClick={()=>{setShowActMenu(false);setSpamLoading(true);detectSpam(lastMail).then(r=>setSpamResult(r)).catch(e=>setSpamResult({score:0,verdict:"エラー",reason:e.message})).finally(()=>setSpamLoading(false));}}
+                        style={{padding:"10px 14px",fontSize:13,cursor:"pointer",color:T.text,display:"flex",gap:8,alignItems:"center"}}
+                        onMouseEnter={e=>e.currentTarget.style.background=T.hover} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                        🔍 スパム判定
+                      </div>
+                      <div style={{height:1,background:T.border}}/>
+                      <div onClick={()=>{setShowActMenu(false);const d=new Date();d.setDate(d.getDate()+1);d.setHours(9,0,0,0);addTask("対応: "+selThread.subject,selThread.subject,d.getTime());setShowTasks(true);}}
+                        style={{padding:"10px 14px",fontSize:13,cursor:"pointer",color:T.text,display:"flex",gap:8,alignItems:"center"}}
+                        onMouseEnter={e=>e.currentTarget.style.background=T.hover} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                        ⏰ タスク化 (明朝9時)
+                      </div>
+                    </div>}
+                  </div>
+                </div>
+              </div>
+
+              {/* チャット */}
+              <div style={{flex:1,overflowY:"auto",padding:"16px 20px",background:T.bg}}>
+                {(()=>{
+                  const result=[];let lastDay=null;
+                  selThread.mails.forEach((m,i)=>{
+                    const day=dayKey(m.date);
+                    if(day!==lastDay){lastDay=day;result.push(<DateSeparator key={"sep-"+day+i} label={formatDateSep(m.date)} T={T}/>);}
+                    result.push(<ChatBubble key={getMailKey(m)||i} mail={m} isSent={!!m.isSent} isUnread={!isRead(m)&&!m.isSent} isStarred={starred.has(getMailKey(m))} onStar={toggleStar} T={T}/>);
+                  });
+                  return result;
+                })()}
+                <div ref={chatBottomRef} style={{height:1}}/>
+              </div>
+
+              {/* AI返信案パネル（折りたたみ） */}
+              {replies.length>0&&(
+                <div style={{borderTop:`1px solid ${T.border}`,padding:"10px 16px",background:T.surface}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+                    <span style={{fontSize:13,fontWeight:600,color:T.textSec}}>💬 AI 返信案</span>
+                    {styleProfile&&<span style={{fontSize:11,background:T.styleChip,color:"#7C3AED",padding:"2px 8px",borderRadius:10}}>🎨 文体適用済み</span>}
+                  </div>
+                  <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                    {replies.map((r,i)=>(
+                      <div key={i} style={{flex:"1 1 160px",background:T.hover,borderRadius:8,padding:"8px 10px",fontSize:13}}>
+                        <div style={{fontWeight:600,color:T.accent,marginBottom:3,fontSize:12}}>{r.label}</div>
+                        <div style={{color:T.text,lineHeight:1.5,whiteSpace:"pre-wrap",fontSize:13,marginBottom:6}}>{r.body}</div>
+                        <button onClick={()=>{setReplyText(r.body);replyInputRef.current?.focus();}} style={{...mkBtn(T.accent,true)}}>↓ 入力欄へ</button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* ════ Spike スタイル ボトム入力バー ════ */}
+              <div style={{borderTop:`1px solid ${T.border}`,background:T.surface,padding:"10px 14px"}}>
+                {/* From / To 表示行 */}
+                <div style={{display:"flex",alignItems:"center",flexWrap:"wrap",gap:6,fontSize:11,color:T.textTer,marginBottom:6}}>
+                  <span>From:</span>
+                  <select value={bottomFromAcc?.id||""} onChange={e=>setReplyFromAccId(e.target.value)}
+                    style={{fontSize:11,border:"none",background:"none",color:T.textSec,cursor:"pointer",outline:"none",fontWeight:500,maxWidth:180}}>
+                    {CONFIG.ACCOUNTS.map(a=><option key={a.id} value={a.id}>{a.name} ({a.email})</option>)}
+                  </select>
+                  <span style={{color:T.border}}>|</span>
+                  <span>To:</span>
+                  <span style={{color:T.textSec,fontWeight:500,maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}
+                    title={bottomReplyTo}>{bottomReplyTo||"(送信先未確定)"}</span>
+                  {replyFiles.length>0&&<span style={{marginLeft:4,color:T.accent}}>📎 {replyFiles.length}件</span>}
+                </div>
+                <div style={{display:"flex",alignItems:"flex-end",gap:8,background:T.hover,borderRadius:14,padding:"6px 8px 6px 14px",border:`1px solid ${T.border}`}}>
+                  {/* 添付ボタン */}
+                  <input ref={replyFileRef} type="file" multiple style={{display:"none"}}
+                    onChange={e=>setReplyFiles(f=>[...f,...Array.from(e.target.files)])}/>
+                  <button onClick={()=>replyFileRef.current?.click()}
+                    title="ファイルを添付"
+                    style={{background:"none",border:"none",cursor:"pointer",fontSize:18,color:T.textTer,padding:"2px",flexShrink:0,lineHeight:1}}>
+                    📎
+                  </button>
+                  {/* テキスト入力 */}
+                  <textarea
+                    ref={replyInputRef}
+                    value={replyText}
+                    onChange={e=>{setReplyText(e.target.value);e.target.style.height='auto';e.target.style.height=Math.min(e.target.scrollHeight,140)+'px';}}
+                    onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();handleBottomSend();}}}
+                    placeholder={`${contact.name} へ返信… (Enter で送信 / Shift+Enter で改行)`}
+                    rows={1}
+                    style={{flex:1,background:"none",border:"none",outline:"none",resize:"none",fontSize:14,color:T.text,lineHeight:1.5,fontFamily:"inherit",maxHeight:140,overflow:"auto",padding:"4px 0"}}
+                  />
+                  {/* ✨ AI返信案ボタン */}
+                  <button
+                    onClick={()=>{setRepLoading(true);generateReplies(lastMail,styleProfile).then(r=>setReplies(r)).catch(e=>setReplies([{label:"エラー",body:e.message}])).finally(()=>setRepLoading(false));}}
+                    disabled={repLoading}
+                    title={styleProfile?"AI返信案 (文体適用済み)":"AI返信案"}
+                    style={{background:"none",border:"none",cursor:"pointer",fontSize:18,color:styleProfile?"#7C3AED":T.textTer,padding:"2px",flexShrink:0,lineHeight:1,opacity:repLoading?0.5:1}}>
+                    {repLoading?<span className="spinner"/>:"✨"}
+                  </button>
+                  {/* 送信ボタン */}
+                  <button
+                    onClick={handleBottomSend}
+                    disabled={!replyText.trim()&&replyFiles.length===0}
+                    style={{width:34,height:34,borderRadius:"50%",border:"none",flexShrink:0,cursor:replyText.trim()||replyFiles.length>0?"pointer":"not-allowed",
+                      background:replyText.trim()||replyFiles.length>0?T.accent:"#D1D5DB",
+                      color:"#fff",fontSize:16,display:"flex",alignItems:"center",justifyContent:"center",transition:"background .15s"}}>
+                    ➤
+                  </button>
+                </div>
+                {/* 添付ファイル一覧 */}
+                {replyFiles.length>0&&(
+                  <div style={{display:"flex",flexWrap:"wrap",gap:5,marginTop:6}}>
+                    {replyFiles.map((f,i)=>(
+                      <span key={i} style={{fontSize:12,background:T.hover,border:`1px solid ${T.border}`,borderRadius:6,padding:"2px 8px",color:T.text,display:"flex",alignItems:"center",gap:4}}>
+                        📎 {f.name}
+                        <button onClick={()=>setReplyFiles(fs=>fs.filter((_,j)=>j!==i))} style={{background:"none",border:"none",cursor:"pointer",color:T.textTer,fontSize:12,lineHeight:1}}>×</button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })()
+      )}
+
+      {/* 右クリックメニュー */}
+      {ctxMenu&&<ContextMenu x={ctxMenu.x} y={ctxMenu.y} thread={ctxMenu.thread}
+        isStarred={ctxMenu.thread.mails.some(m=>starred.has(getMailKey(m)))}
+        allRead={ctxMenu.thread.mails.every(m=>isRead(m))}
+        onClose={()=>setCtxMenu(null)} T={T}
+        onStar={()=>ctxMenu.thread.mails.forEach(m=>toggleStar(getMailKey(m)))}
+        onMarkRead={()=>{const ids=ctxMenu.thread.mails.map(m=>getMailKey(m));ctxMenu.thread.mails.every(m=>isRead(m))?markUnread(ids):markRead(ids);}}
+        onForward={()=>openCompose("forward",ctxMenu.thread)}
+        onCreateTask={()=>{addTask(`対応: ${ctxMenu.thread.subject}`,ctxMenu.thread.subject);setShowTasks(true);}}
+      />}
+
+      {composeMode&&<ComposeModal {...composeMode} onClose={()=>setComposeMode(null)} T={T} onSend={(p)=>{
+        const optId="opt_"+Date.now();
+        const acc=CONFIG.ACCOUNTS.find(a=>a.id===(p.accountId||CONFIG.ACCOUNTS[0]?.id));
+        const optMail={
+          messageId:optId,id:optId,
+          from:p.from||acc?.email||"",fromName:p.from||acc?.email||"",
+          to:p.to||"",subject:p.subject||"",
+          body:p.body||"",snippet:(p.body||"").slice(0,120),
+          date:new Date().toISOString(),read:true,isSent:true,
+          accountId:p.accountId||CONFIG.ACCOUNTS[0]?.id||"",
+          attachments:(p.attachments||[]).map(a=>({filename:a.filename,mimeType:a.mimeType,size:a.size})),
+          _optimistic:true,
+        };
+        setEmails(prev=>[...prev,optMail]);
+        sendEmailAPI(p).then(result=>{
+          const confirmed=result&&result.sentMessage
+            ?{...result.sentMessage,isSent:true,read:true,_optimistic:false,accountId:p.accountId||CONFIG.ACCOUNTS[0]?.id}
+            :{...optMail,_optimistic:false};
+          setEmails(prev=>prev.map(e=>e.messageId===optId?confirmed:e));
+          toast("送信しました ✓",'success');
+        }).catch(e=>{
+          setEmails(prev=>prev.filter(e=>e.messageId!==optId));
+          toast("送信失敗: "+e.message,'error');
+        });
+      }}/>}
+      {showTasks&&<TaskPanel tasks={tasks} onClose={()=>setShowTasks(false)} onAdd={addTask} onToggle={toggleTask} onDelete={deleteTask} onSnooze={snoozeTask} T={T}/>}
+
+      {/* 文体プロファイル詳細 */}
+      {showProfile&&styleProfile&&(
+        <div onClick={e=>e.target===e.currentTarget&&setShowProfile(false)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:2000}}>
+          <div style={{background:T.surface,borderRadius:14,padding:28,width:560,maxWidth:"92vw",maxHeight:"85vh",overflowY:"auto",boxShadow:"0 24px 64px rgba(0,0,0,.3)",border:`1px solid ${T.border}`}}>
+            <div style={{display:"flex",justifyContent:"space-between",marginBottom:16}}>
+              <h3 style={{fontSize:17,fontWeight:700,color:T.text}}>🎨 文体プロファイル</h3>
+              <button onClick={()=>setShowProfile(false)} style={{background:"none",border:"none",fontSize:20,cursor:"pointer",color:T.textSec}}>✕</button>
+            </div>
+            <div style={{background:T.styleChip,borderRadius:8,padding:"12px 16px",marginBottom:16,fontSize:14,lineHeight:1.7,color:"#5B21B6"}}>{styleProfile.summary}</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+              {[["よく使う書き出し",styleProfile.greetings,"#F0FDF4","#166534"],["よく使う締め",styleProfile.closings,"#EFF6FF","#1E40AF"],
+                ["特徴的なフレーズ",styleProfile.keyPhrases,"#FDF4FF","#7E22CE"],["文体の特徴",styleProfile.characteristics,"#FFFBEB","#92400E"]]
+                .filter(([,items])=>items?.length).map(([title,items,bg,tc])=>(
+                <div key={title} style={{background:bg,borderRadius:8,padding:"10px 12px"}}>
+                  <div style={{fontSize:11,fontWeight:600,color:tc,marginBottom:5}}>{title}</div>
+                  {items.map((it,i)=><div key={i} style={{fontSize:13,color:"#374151",marginBottom:3}}>· {it}</div>)}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const root=ReactDOM.createRoot(document.getElementById("root"));
+root.render(<MailChat/>);
+
+// Service Worker 登録
+// localhost (開発環境) では登録しない → キャッシュ問題を回避
+// 本番 or ?sw=1 クエリ付きの場合のみ有効化
+if ('serviceWorker' in navigator && (location.hostname !== 'localhost' || location.search.includes('sw=1'))) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js')
+      .then(()=>{console.log('[SW] 登録完了');})
+      .catch(()=>{});
+  });
+} else if (location.hostname === 'localhost') {
+  // 開発中: 既存の SW があれば登録解除してキャッシュをクリア
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.getRegistrations().then(regs=>{
+      regs.forEach(r=>r.unregister());
+    });
+  }
+}
+</script>
+</body>
+</html>

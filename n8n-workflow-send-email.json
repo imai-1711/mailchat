@@ -1,0 +1,200 @@
+{
+    "name":  "MailChat - メール送信",
+    "nodes":  [
+                  {
+                      "parameters":  {
+                                         "httpMethod":  "POST",
+                                         "path":  "send-email",
+                                         "responseMode":  "responseNode",
+                                         "options":  {
+
+                                                     }
+                                     },
+                      "id":  "webhook-send",
+                      "name":  "Webhook - メール送信",
+                      "type":  "n8n-nodes-base.webhook",
+                      "typeVersion":  2.1,
+                      "position":  [
+                                       240,
+                                       300
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "mode":  "runOnceForAllItems",
+                                         "jsCode":  "const items = $input.all();\nconst b = items[0].json.body || items[0].json;\nconst from        = b.from        || \u0027\u0027;\nconst to          = b.to          || \u0027\u0027;\nconst subject     = b.subject     || \u0027\u0027;\nconst bodyText    = b.body        || \u0027\u0027;\nconst cc          = b.cc          || \u0027\u0027;\nconst bcc         = b.bcc         || \u0027\u0027;\nconst inReplyTo   = b.inReplyTo   || \u0027\u0027;\nconst references  = b.references  || \u0027\u0027;\nconst accountId   = b.accountId   || \u0027work\u0027;\nconst attachments = Array.isArray(b.attachments) ? b.attachments : [];\nconst MAX_PREVIEW_BYTES = 5 * 1024 * 1024;\nconst attachmentsMeta = attachments.map(a =\u003e {\n  const filename = a.filename || \u0027attachment\u0027;\n  const mimeType = a.mimeType || \u0027application/octet-stream\u0027;\n  const size = a.size || 0;\n  const content = a.content || \u0027\u0027;\n  const canPreview = !!content \u0026\u0026 mimeType.startsWith(\u0027image/\u0027) \u0026\u0026 size \u003c= MAX_PREVIEW_BYTES;\n  return {\n    filename,\n    mimeType,\n    size,\n    hasPreview: canPreview,\n    ...(canPreview ? { dataUrl: \u0027data:\u0027 + mimeType + \u0027;base64,\u0027 + content } : {}),\n  };\n});\nconst outputItem = {\n  json: {\n    from, to, subject, bodyText, cc, bcc, inReplyTo, references, accountId,\n    attachmentNames: attachments.map((_, i) =\u003e \u0027att_\u0027 + i).join(\u0027,\u0027),\n    attachmentsMeta,\n  },\n  binary: {}\n};\nattachments.forEach((att, i) =\u003e {\n  outputItem.binary[\u0027att_\u0027 + i] = {\n    data:     att.content  || \u0027\u0027,\n    mimeType: att.mimeType || \u0027application/octet-stream\u0027,\n    fileName: att.filename || (\u0027attachment_\u0027 + i),\n    fileSize: att.size     || 0,\n  };\n});\nreturn [outputItem];"
+                                     },
+                      "id":  "code-prepare",
+                      "name":  "添付変換 \u0026 フィールド整形",
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       460,
+                                       300
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "fromEmail":  "={{ $json.from }}",
+                                         "toEmail":  "={{ $json.to }}",
+                                         "subject":  "={{ $json.subject }}",
+                                         "emailFormat":  "text",
+                                         "text":  "={{ $json.bodyText }}",
+                                         "options":  {
+                                                         "appendAttribution":  false,
+                                                         "attachments":  "={{ $json.attachmentNames }}",
+                                                         "ccEmail":  "={{ $json.cc }}",
+                                                         "bccEmail":  "={{ $json.bcc }}"
+                                                     }
+                                     },
+                      "id":  "smtp-send",
+                      "name":  "SMTP - むうむうメール",
+                      "type":  "n8n-nodes-base.emailSend",
+                      "typeVersion":  2.1,
+                      "position":  [
+                                       680,
+                                       300
+                                   ],
+                      "credentials":  {
+                                          "smtp":  {
+                                                       "id":  "zQDcrHtq8kk9DU8I",
+                                                       "name":  "SMTP account"
+                                                   }
+                                      }
+                  },
+                  {
+                      "parameters":  {
+                                         "mode":  "runOnceForAllItems",
+                                         "jsCode":  "const prep = $(\u0027添付変換 \u0026 フィールド整形\u0027).first().json;\nconst mid = \u0027\u003cmailchat-\u0027 + Date.now() + \u0027-\u0027 + Math.random().toString(36).slice(2,8) + \u0027@mailchat\u003e\u0027;\nconst now = new Date().toISOString();\nconst sentMessage = {\n  id: mid,\n  messageId: mid,\n  from: prep.from || \u0027\u0027,\n  fromName: prep.from || \u0027\u0027,\n  to: prep.to || \u0027\u0027,\n  subject: prep.subject || \u0027\u0027,\n  body: prep.bodyText || \u0027\u0027,\n  snippet: (prep.bodyText || \u0027\u0027).substring(0, 120),\n  date: now,\n  read: true,\n  isSent: true,\n  accountId: prep.accountId || \u0027work\u0027,\n  inReplyTo: prep.inReplyTo || \u0027\u0027,\n  references: prep.references || \u0027\u0027,\n  attachments: Array.isArray(prep.attachmentsMeta) ? prep.attachmentsMeta : [],\n};\nreturn [{ json: { sentMessage } }];"
+                                     },
+                      "id":  "code-sentmessage",
+                      "name":  "sentMessage 作成",
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       900,
+                                       300
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "method":  "POST",
+        "url":  "http://192.168.1.106:5678/webhook/import-emails",
+                                         "sendBody":  true,
+                                         "contentType":  "json",
+                                         "specifyBody":  "json",
+                                         "jsonBody":  "={{ { \"emails\": [$(\u0027sentMessage 作成\u0027).first().json.sentMessage] } }}",
+                                         "options":  {
+                                                         "response":  {
+                                                                          "response":  {
+                                                                                           "neverError":  true
+                                                                                       }
+                                                                      }
+                                                     }
+                                     },
+                      "id":  "http-save",
+                      "name":  "キャッシュ保存",
+                      "type":  "n8n-nodes-base.httpRequest",
+                      "typeVersion":  4.4,
+                      "position":  [
+                                       1120,
+                                       300
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "respondWith":  "json",
+                                         "responseBody":  "={{ { \"success\": true, \"sentMessage\": $(\u0027sentMessage 作成\u0027).first().json.sentMessage } }}",
+                                         "options":  {
+                                                         "responseHeaders":  {
+                                                                                 "entries":  [
+                                                                                                 {
+                                                                                                     "name":  "Access-Control-Allow-Origin",
+                                                                                                     "value":  "*"
+                                                                                                 },
+                                                                                                 {
+                                                                                                     "name":  "Access-Control-Allow-Methods",
+                                                                                                     "value":  "GET, POST, OPTIONS"
+                                                                                                 },
+                                                                                                 {
+                                                                                                     "name":  "Access-Control-Allow-Headers",
+                                                                                                     "value":  "Content-Type"
+                                                                                                 }
+                                                                                             ]
+                                                                             }
+                                                     }
+                                     },
+                      "id":  "respond-send",
+                      "name":  "レスポンス返却",
+                      "type":  "n8n-nodes-base.respondToWebhook",
+                      "typeVersion":  1.5,
+                      "position":  [
+                                       1340,
+                                       300
+                                   ]
+                  }
+              ],
+    "connections":  {
+                        "Webhook - メール送信":  {
+                                                "main":  [
+                                                             [
+                                                                 {
+                                                                     "node":  "添付変換 \u0026 フィールド整形",
+                                                                     "type":  "main",
+                                                                     "index":  0
+                                                                 }
+                                                             ]
+                                                         ]
+                                            },
+                        "添付変換 \u0026 フィールド整形":  {
+                                                    "main":  [
+                                                                 [
+                                                                     {
+                                                                         "node":  "SMTP - むうむうメール",
+                                                                         "type":  "main",
+                                                                         "index":  0
+                                                                     }
+                                                                 ]
+                                                             ]
+                                                },
+                        "SMTP - むうむうメール":  {
+                                               "main":  [
+                                                            [
+                                                                {
+                                                                    "node":  "sentMessage 作成",
+                                                                    "type":  "main",
+                                                                    "index":  0
+                                                                }
+                                                            ]
+                                                        ]
+                                           },
+                        "sentMessage 作成":  {
+                                               "main":  [
+                                                            [
+                                                                {
+                                                                    "node":  "キャッシュ保存",
+                                                                    "type":  "main",
+                                                                    "index":  0
+                                                                }
+                                                            ]
+                                                        ]
+                                           },
+                        "キャッシュ保存":  {
+                                        "main":  [
+                                                     [
+                                                         {
+                                                             "node":  "レスポンス返却",
+                                                             "type":  "main",
+                                                             "index":  0
+                                                         }
+                                                     ]
+                                                 ]
+                                    }
+                    },
+    "settings":  {
+                     "executionOrder":  "v1"
+                 },
+    "tags":  [
+                 "MailChat"
+             ]
+}

@@ -1,0 +1,174 @@
+{
+  "name": "MailChat - メール取得",
+  "nodes": [
+    {
+      "id": "2b95163c-1dc8-4f46-acd2-34bb9735d133",
+      "name": "IMAP - INBOX",
+      "type": "n8n-nodes-base.emailReadImap",
+      "typeVersion": 2.1,
+      "position": [0, 0],
+      "parameters": {
+        "mailbox": "INBOX",
+        "postProcessAction": "nothing",
+        "downloadAttachments": true,
+        "options": {
+          "customEmailConfig": "[\"ALL\"]",
+          "forceReconnect": 60,
+          "trackLastMessageId": false
+        }
+      }
+    },
+    {
+      "id": "d684d187-602e-45dd-bea4-1d95481944c1",
+      "name": "受信を保存",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [224, 0],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nconst decodeWord=(str)=>{if(!str||typeof str!==\"string\")return str||\"\";return str.replace(/=\\?([^?]+)\\?([BbQq])\\?([^?]*)\\?=/g,(_,charset,enc,text)=>{try{const buf=enc.toUpperCase()===\"B\"?Buffer.from(text,\"base64\"):Buffer.from(text.replace(/_/g,\" \").replace(/=([0-9A-Fa-f]{2})/g,(_,h)=>String.fromCharCode(parseInt(h,16))),\"binary\");try{return new TextDecoder(charset).decode(buf);}catch{return buf.toString(\"utf8\");}}catch{return text;}});};\nconst fixMojibake=(str)=>{if(!str||typeof str!==\"string\")return str;if(!/[\\xC0-\\xFF]/.test(str))return str;try{const bytes=Buffer.from(str,\"latin1\");const decoded=new TextDecoder(\"utf-8\").decode(bytes);if(/[\\u3000-\\u9FFF\\u30A0-\\u30FF\\u3040-\\u309F\\uAC00-\\uD7AF]/.test(decoded)&&!/[\\u3000-\\u9FFF]/.test(str))return decoded;}catch{}return str;};\nconst pa=(s)=>{if(!s)return{n:\"不明\",a:\"\"};const fixed=fixMojibake(decodeWord(s));const m=fixed.match(/^(.+?)\\s*<([^>]+)>/);return m?{n:m[1].trim()||m[2],a:m[2].trim()}:{n:fixed,a:fixed};};\nconst getBody=(item)=>{let txt=item.textPlain||item.text||\"\";if(txt&&(txt.includes(\"\\x1b\")||/\\$B|\\(B/.test(txt))){try{txt=new TextDecoder(\"iso-2022-jp\").decode(Buffer.from(txt,\"latin1\"));}catch{txt=txt.replace(/\\x1b\\$[B@J]/g,\"\").replace(/\\x1b\\([BHJ]/g,\"\").trim();}}txt=fixMojibake(txt);if(txt.trim())return txt.substring(0,3000);const html=fixMojibake(item.textHtml||item.html||\"\");return html.replace(/<style[\\s\\S]*?<\\/style>/gi,\"\").replace(/<script[\\s\\S]*?<\\/script>/gi,\"\").replace(/<br\\s*\\/?>/gi,\"\\n\").replace(/<p[^>]*>/gi,\"\\n\").replace(/<[^>]*>/g,\" \").replace(/&nbsp;/g,\" \").replace(/&amp;/g,\"&\").replace(/&lt;/g,\"<\").replace(/&gt;/g,\">\").replace(/&quot;/g,'\"').replace(/\\s+/g,\" \").trim().substring(0,3000);};\nconst getAttachments=(item,bin)=>{const jsonAtts=item.attachments||[];const binAtts=bin?Object.entries(bin).filter(([k])=>/^attachment/i.test(k)).map(([k,v])=>({filename:v.fileName||v.filename||k,mimeType:v.mimeType||\"application/octet-stream\",size:v.fileSize||0,content:v.data||\"\",contentDisposition:\"attachment\"})):[];const atts=jsonAtts.length>0?jsonAtts:binAtts;return atts.filter(a=>a&&(a.filename||a.name||(a.mimeType&&a.mimeType.startsWith(\"image/\"))||(a.contentType&&a.contentType.startsWith(\"image/\")))).map(a=>{const mime=a.mimeType||a.contentType||a.type||\"application/octet-stream\";const sz=typeof a.size===\"number\"?a.size:typeof a.content===\"string\"&&a.content?Buffer.from(a.content,\"base64\").length:0;const dataUrl=(typeof a.content===\"string\"&&a.content&&mime.startsWith(\"image/\")&&sz<=5*1024*1024)?(\"data:\"+mime+\";base64,\"+a.content):undefined;return{filename:fixMojibake(decodeWord(a.filename||a.name||(mime.startsWith(\"image/\")?\"image.\"+((mime).split(\"/\")[1]||\"jpg\"):\"attachment\"))),mimeType:mime,size:sz,isInline:a.contentDisposition===\"inline\"||!!a.contentId,dataUrl};});};\nconst item=items[0].json;\nconst sd=$getWorkflowStaticData(\"global\");\nif(!sd.emails)sd.emails={};\nconst from=pa(item.from);const to=pa(item.to);\nconst body=getBody(item);\nconst subj=fixMojibake(decodeWord(item.subject||\"(件名なし)\"));\nconst mid=item.metadata?.[\"message-id\"]||String(item.attributes?.uid||(\"recv_\"+Math.random()));\nconst atts=getAttachments(item,items[0].binary);\nconst newEntry={id:String(item.attributes?.uid||Math.random()),messageId:mid,from:from.a,fromName:from.n,to:to.a,subject:subj,body,snippet:body.replace(/<[^>]*>/g,\"\").substring(0,120),date:item.date||new Date().toISOString(),read:!!(item.attributes?.flags?.[\"\\\\Seen\"]),isSent:false,accountId:\"work\",inReplyTo:item.metadata?.[\"in-reply-to\"]||\"\",references:item.metadata?.[\"references\"]||\"\",attachments:atts};\nconst existed=!!sd.emails[mid];\nif(!existed){sd.emails[mid]=newEntry;}else{if(atts.length>0)sd.emails[mid].attachments=atts;const eb=sd.emails[mid].body||\"\";if(body.trim()&&(!eb.trim()||/[\\xC0-\\xFF]/.test(eb))){sd.emails[mid].body=body;sd.emails[mid].snippet=newEntry.snippet;}}\nreturn [{json:{saved:mid,total:Object.keys(sd.emails).length,attachments:atts.length,updated:existed}}];"
+      }
+    },
+    {
+      "id": "0230cb8e-ed8f-4d19-805b-b2b64ab1c754",
+      "name": "IMAP - INBOX.Sent",
+      "type": "n8n-nodes-base.emailReadImap",
+      "typeVersion": 2.1,
+      "position": [0, 224],
+      "parameters": {
+        "mailbox": "INBOX.Sent",
+        "postProcessAction": "nothing",
+        "downloadAttachments": true,
+        "options": {
+          "customEmailConfig": "[\"ALL\"]",
+          "forceReconnect": 60,
+          "trackLastMessageId": false
+        }
+      }
+    },
+    {
+      "id": "d8134e4b-98df-435a-b1c1-9fb6eecb63cf",
+      "name": "送信を保存",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [224, 224],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nconst decodeWord=(str)=>{if(!str||typeof str!==\"string\")return str||\"\";return str.replace(/=\\?([^?]+)\\?([BbQq])\\?([^?]*)\\?=/g,(_,charset,enc,text)=>{try{const buf=enc.toUpperCase()===\"B\"?Buffer.from(text,\"base64\"):Buffer.from(text.replace(/_/g,\" \").replace(/=([0-9A-Fa-f]{2})/g,(_,h)=>String.fromCharCode(parseInt(h,16))),\"binary\");try{return new TextDecoder(charset).decode(buf);}catch{return buf.toString(\"utf8\");}}catch{return text;}});};\nconst fixMojibake=(str)=>{if(!str||typeof str!==\"string\")return str;if(!/[\\xC0-\\xFF]/.test(str))return str;try{const bytes=Buffer.from(str,\"latin1\");const decoded=new TextDecoder(\"utf-8\").decode(bytes);if(/[\\u3000-\\u9FFF\\u30A0-\\u30FF\\u3040-\\u309F\\uAC00-\\uD7AF]/.test(decoded)&&!/[\\u3000-\\u9FFF]/.test(str))return decoded;}catch{}return str;};\nconst pa=(s)=>{if(!s)return{n:\"不明\",a:\"\"};const fixed=fixMojibake(decodeWord(s));const m=fixed.match(/^(.+?)\\s*<([^>]+)>/);return m?{n:m[1].trim()||m[2],a:m[2].trim()}:{n:fixed,a:fixed};};\nconst getBody=(item)=>{let txt=item.textPlain||item.text||\"\";if(txt&&(txt.includes(\"\\x1b\")||/\\$B|\\(B/.test(txt))){try{txt=new TextDecoder(\"iso-2022-jp\").decode(Buffer.from(txt,\"latin1\"));}catch{txt=txt.replace(/\\x1b\\$[B@J]/g,\"\").replace(/\\x1b\\([BHJ]/g,\"\").trim();}}txt=fixMojibake(txt);if(txt.trim())return txt.substring(0,3000);const html=fixMojibake(item.textHtml||item.html||\"\");return html.replace(/<style[\\s\\S]*?<\\/style>/gi,\"\").replace(/<script[\\s\\S]*?<\\/script>/gi,\"\").replace(/<br\\s*\\/?>/gi,\"\\n\").replace(/<p[^>]*>/gi,\"\\n\").replace(/<[^>]*>/g,\" \").replace(/&nbsp;/g,\" \").replace(/&amp;/g,\"&\").replace(/&lt;/g,\"<\").replace(/&gt;/g,\">\").replace(/&quot;/g,'\"').replace(/\\s+/g,\" \").trim().substring(0,3000);};\nconst getAttachments=(item,bin)=>{const jsonAtts=item.attachments||[];const binAtts=bin?Object.entries(bin).filter(([k])=>/^attachment/i.test(k)).map(([k,v])=>({filename:v.fileName||v.filename||k,mimeType:v.mimeType||\"application/octet-stream\",size:v.fileSize||0,content:v.data||\"\",contentDisposition:\"attachment\"})):[];const atts=jsonAtts.length>0?jsonAtts:binAtts;return atts.filter(a=>a&&(a.filename||a.name||(a.mimeType&&a.mimeType.startsWith(\"image/\"))||(a.contentType&&a.contentType.startsWith(\"image/\")))).map(a=>{const mime=a.mimeType||a.contentType||a.type||\"application/octet-stream\";const sz=typeof a.size===\"number\"?a.size:typeof a.content===\"string\"&&a.content?Buffer.from(a.content,\"base64\").length:0;const dataUrl=(typeof a.content===\"string\"&&a.content&&mime.startsWith(\"image/\")&&sz<=5*1024*1024)?(\"data:\"+mime+\";base64,\"+a.content):undefined;return{filename:fixMojibake(decodeWord(a.filename||a.name||(mime.startsWith(\"image/\")?\"image.\"+((mime).split(\"/\")[1]||\"jpg\"):\"attachment\"))),mimeType:mime,size:sz,isInline:a.contentDisposition===\"inline\"||!!a.contentId,dataUrl};});};\nconst item=items[0].json;\nconst sd=$getWorkflowStaticData(\"global\");\nif(!sd.emails)sd.emails={};\nconst from=pa(item.from);const to=pa(item.to);\nconst body=getBody(item);\nconst subj=fixMojibake(decodeWord(item.subject||\"(件名なし)\"));\nconst mid=item.metadata?.[\"message-id\"]||String(item.attributes?.uid||(\"sent_\"+Math.random()));\nconst atts=getAttachments(item,items[0].binary);\nconst newEntry={id:String(item.attributes?.uid||Math.random()),messageId:mid,from:from.a,fromName:from.n,to:to.a,subject:subj,body,snippet:body.replace(/<[^>]*>/g,\"\").substring(0,120),date:item.date||new Date().toISOString(),read:true,isSent:true,accountId:\"work\",inReplyTo:item.metadata?.[\"in-reply-to\"]||\"\",references:item.metadata?.[\"references\"]||\"\",attachments:atts};\nconst existed=!!sd.emails[mid];\nif(!existed){sd.emails[mid]=newEntry;}else{if(atts.length>0)sd.emails[mid].attachments=atts;const eb=sd.emails[mid].body||\"\";if(body.trim()&&(!eb.trim()||/[\\xC0-\\xFF]/.test(eb))){sd.emails[mid].body=body;sd.emails[mid].snippet=newEntry.snippet;}}\nreturn [{json:{saved:mid,total:Object.keys(sd.emails).length,attachments:atts.length,updated:existed}}];"
+      }
+    },
+    {
+      "id": "472bb4a5-1a70-4f72-8c7c-df8c5a685714",
+      "name": "Webhook - メール取得",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [0, 448],
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "fetch-emails",
+        "responseMode": "responseNode"
+      },
+      "webhookId": "3b1c028e-828c-4d2d-89d5-619778734161"
+    },
+    {
+      "id": "195d817a-9d06-421a-8596-0dbe4d6aa679",
+      "name": "メールを返す",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [224, 448],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nconst fixMojibake=(str)=>{if(!str||typeof str!==\"string\")return str;if(!/[\\xC0-\\xFF]/.test(str))return str;try{const bytes=Buffer.from(str,\"latin1\");const decoded=new TextDecoder(\"utf-8\").decode(bytes);if(/[\\u3000-\\u9FFF\\u30A0-\\u30FF\\u3040-\\u309F\\uAC00-\\uD7AF]/.test(decoded)&&!/[\\u3000-\\u9FFF]/.test(str))return decoded;}catch{}return str;};\nconst fixEmail=(e)=>({...e,subject:fixMojibake(e.subject||\"\"),body:fixMojibake(e.body||\"\"),snippet:fixMojibake(e.snippet||\"\"),fromName:fixMojibake(e.fromName||\"\"),to:fixMojibake(e.to||\"\"),});\nconst sd=$getWorkflowStaticData(\"global\");\nconst all=Object.values(sd.emails||{}).map(fixEmail);\nall.sort((a,b)=>new Date(b.date)-new Date(a.date));\nreturn [{json:{emails:all,total:all.length,fetchedAt:new Date().toISOString()}}];"
+      }
+    },
+    {
+      "id": "02fcab00-12ac-40be-a21d-cc1dd207256c",
+      "name": "レスポンス",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [448, 448],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              { "name": "Access-Control-Allow-Origin",  "value": "*" },
+              { "name": "Access-Control-Allow-Methods", "value": "GET, POST, OPTIONS" },
+              { "name": "Access-Control-Allow-Headers", "value": "Content-Type" }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "6528deba-daa9-4c07-861b-b2155e17e4f6",
+      "name": "Webhook - 一括インポート",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [0, 672],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "import-emails",
+        "responseMode": "responseNode"
+      },
+      "webhookId": "044fe476-7097-402f-937e-ee9bf66ac69e"
+    },
+    {
+      "id": "da4bbccd-10a7-436a-9f47-b8e9047174ec",
+      "name": "一括保存",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [224, 672],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nconst sd=$getWorkflowStaticData(\"global\");\nif(!sd.emails)sd.emails={};\nconst incoming=$json.body?.emails||[];\nlet added=0,updated=0;\nfor(const m of incoming){\n  if(!m.messageId)continue;\n  if(!sd.emails[m.messageId]){sd.emails[m.messageId]=m;added++;}\n  else{const ex=sd.emails[m.messageId];sd.emails[m.messageId]={...ex,body:m.body||ex.body,snippet:m.snippet||ex.snippet,attachments:m.attachments||ex.attachments||[],inReplyTo:m.inReplyTo||ex.inReplyTo||\"\",references:m.references||ex.references||\"\"};updated++;}\n}\nreturn [{json:{ok:true,added,updated,total:Object.keys(sd.emails).length}}];"
+      }
+    },
+    {
+      "id": "0c3659a1-c8b4-4877-9370-3395556cc547",
+      "name": "インポート完了",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [448, 672],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              { "name": "Access-Control-Allow-Origin", "value": "*" }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "connections": {
+    "IMAP - INBOX": {
+      "main": [[{ "node": "受信を保存", "type": "main", "index": 0 }]]
+    },
+    "IMAP - INBOX.Sent": {
+      "main": [[{ "node": "送信を保存", "type": "main", "index": 0 }]]
+    },
+    "Webhook - メール取得": {
+      "main": [[{ "node": "メールを返す", "type": "main", "index": 0 }]]
+    },
+    "メールを返す": {
+      "main": [[{ "node": "レスポンス", "type": "main", "index": 0 }]]
+    },
+    "Webhook - 一括インポート": {
+      "main": [[{ "node": "一括保存", "type": "main", "index": 0 }]]
+    },
+    "一括保存": {
+      "main": [[{ "node": "インポート完了", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": true,
+    "binaryMode": "separate"
+  },
+  "tags": ["MailChat"]
+}
+

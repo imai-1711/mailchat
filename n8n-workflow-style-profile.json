@@ -1,0 +1,269 @@
+{
+  "name": "MailChat - 文体プロファイル (Notion)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "={{$json[\"method\"] || \"GET\"}}",
+        "path": "style-profile",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-node",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "webhookId": "style-profile"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json[\"headers\"][\"x-forwarded-method\"] || $json[\"method\"]}}",
+              "operation": "equal",
+              "value2": "POST"
+            }
+          ]
+        }
+      },
+      "id": "router-node",
+      "name": "GET or POST?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "resource": "page",
+        "operation": "search",
+        "query": "MailChat 文体プロファイル",
+        "returnAll": false,
+        "limit": 1,
+        "options": {}
+      },
+      "id": "notion-search-node",
+      "name": "Notion: プロファイルページ検索",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2,
+      "position": [680, 180],
+      "credentials": {
+        "notionApi": {
+          "id": "YOUR_NOTION_CREDENTIAL_ID",
+          "name": "Notion API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "pageId": "={{$json[\"id\"]}}",
+        "options": {}
+      },
+      "id": "notion-get-node",
+      "name": "Notion: ページ内容取得",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2,
+      "position": [900, 180],
+      "credentials": {
+        "notionApi": {
+          "id": "YOUR_NOTION_CREDENTIAL_ID",
+          "name": "Notion API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"profile\": {{ JSON.parse($json[\"properties\"][\"profile_json\"][\"rich_text\"][0][\"plain_text\"] || \"null\") }}\n}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              { "name": "Access-Control-Allow-Origin", "value": "*" },
+              { "name": "Access-Control-Allow-Methods", "value": "GET, POST, OPTIONS" },
+              { "name": "Access-Control-Allow-Headers", "value": "Content-Type" }
+            ]
+          }
+        }
+      },
+      "id": "respond-get-node",
+      "name": "Respond: プロファイルを返す",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1120, 180]
+    },
+    {
+      "parameters": {
+        "resource": "page",
+        "operation": "search",
+        "query": "MailChat 文体プロファイル",
+        "returnAll": false,
+        "limit": 1,
+        "options": {}
+      },
+      "id": "notion-search-post-node",
+      "name": "Notion: 既存ページ検索 (POST)",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2,
+      "position": [680, 420],
+      "credentials": {
+        "notionApi": {
+          "id": "YOUR_NOTION_CREDENTIAL_ID",
+          "name": "Notion API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json[\"id\"]}}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "id": "exists-check-node",
+      "name": "ページ存在確認",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [900, 420]
+    },
+    {
+      "parameters": {
+        "resource": "page",
+        "operation": "update",
+        "pageId": "={{$json[\"id\"]}}",
+        "propertiesUi": {
+          "propertyValues": [
+            {
+              "key": "title",
+              "type": "title",
+              "textContent": "MailChat 文体プロファイル"
+            },
+            {
+              "key": "profile_json",
+              "type": "richText",
+              "textContent": "={{JSON.stringify($node[\"Webhook\"].json[\"body\"][\"profile\"])}}"
+            },
+            {
+              "key": "updated_at",
+              "type": "richText",
+              "textContent": "={{new Date().toISOString()}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "notion-update-node",
+      "name": "Notion: ページ更新",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2,
+      "position": [1120, 360],
+      "credentials": {
+        "notionApi": {
+          "id": "YOUR_NOTION_CREDENTIAL_ID",
+          "name": "Notion API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "page",
+        "operation": "create",
+        "databaseId": "YOUR_NOTION_DATABASE_ID",
+        "title": "MailChat 文体プロファイル",
+        "propertiesUi": {
+          "propertyValues": [
+            {
+              "key": "profile_json",
+              "type": "richText",
+              "textContent": "={{JSON.stringify($node[\"Webhook\"].json[\"body\"][\"profile\"])}}"
+            },
+            {
+              "key": "updated_at",
+              "type": "richText",
+              "textContent": "={{new Date().toISOString()}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "notion-create-node",
+      "name": "Notion: ページ新規作成",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2,
+      "position": [1120, 500],
+      "credentials": {
+        "notionApi": {
+          "id": "YOUR_NOTION_CREDENTIAL_ID",
+          "name": "Notion API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\"ok\": true, \"savedAt\": \"{{new Date().toISOString()}}\"}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              { "name": "Access-Control-Allow-Origin", "value": "*" },
+              { "name": "Access-Control-Allow-Methods", "value": "GET, POST, OPTIONS" },
+              { "name": "Access-Control-Allow-Headers", "value": "Content-Type" }
+            ]
+          }
+        }
+      },
+      "id": "respond-post-node",
+      "name": "Respond: 保存完了",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1340, 420]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [[{ "node": "GET or POST?", "type": "main", "index": 0 }]]
+    },
+    "GET or POST?": {
+      "main": [
+        [{ "node": "Notion: プロファイルページ検索", "type": "main", "index": 0 }],
+        [{ "node": "Notion: 既存ページ検索 (POST)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Notion: プロファイルページ検索": {
+      "main": [[{ "node": "Notion: ページ内容取得", "type": "main", "index": 0 }]]
+    },
+    "Notion: ページ内容取得": {
+      "main": [[{ "node": "Respond: プロファイルを返す", "type": "main", "index": 0 }]]
+    },
+    "Notion: 既存ページ検索 (POST)": {
+      "main": [[{ "node": "ページ存在確認", "type": "main", "index": 0 }]]
+    },
+    "ページ存在確認": {
+      "main": [
+        [{ "node": "Notion: ページ更新", "type": "main", "index": 0 }],
+        [{ "node": "Notion: ページ新規作成", "type": "main", "index": 0 }]
+      ]
+    },
+    "Notion: ページ更新": {
+      "main": [[{ "node": "Respond: 保存完了", "type": "main", "index": 0 }]]
+    },
+    "Notion: ページ新規作成": {
+      "main": [[{ "node": "Respond: 保存完了", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "_mailchat_setup_notes": {
+    "step1": "n8n に Notion の Credential (API キー) を登録し、各 Notion ノードの credential を更新してください",
+    "step2": "プロファイルを保存する Notion データベースを作成し、YOUR_NOTION_DATABASE_ID を実際の ID に置き換えてください",
+    "step3": "Notion データベースに以下のプロパティを追加してください: title (タイトル), profile_json (テキスト), updated_at (テキスト)",
+    "step4": "ワークフローをインポートして Active にすると /webhook/style-profile が使えるようになります",
+    "notion_api_key_url": "https://www.notion.so/my-integrations",
+    "notion_db_id_tip": "Notion データベースの URL の末尾 32 文字が Database ID です"
+  }
+}
