@@ -592,6 +592,14 @@ function MailChat(){
   const[starred,      setStarred]      =React.useState(()=>new Set(lsGet(LS_STARRED,[])));
   const[readSet,      setReadSet]      =React.useState(()=>new Set(lsGet(LS_READ,[])));
   const chatBottomRef=React.useRef(null);
+  const chatAreaRef  =React.useRef(null); // スクロールコンテナへの直接参照
+  // スクロールコンテナを一番下まで確実に移動させる（scrollIntoView より確実）
+  const scrollToBottom=React.useCallback((smooth=false)=>{
+    const el=chatAreaRef.current;
+    if(!el)return;
+    if(smooth){el.scrollTo({top:el.scrollHeight,behavior:'smooth'});}
+    else{el.scrollTop=el.scrollHeight;}
+  },[]);
 
   const toggleStar=(id)=>setStarred(prev=>{const n=new Set(prev);n.has(id)?n.delete(id):n.add(id);lsSet(LS_STARRED,[...n]);return n;});
   const markRead=(ids)=>setReadSet(prev=>{const n=new Set(prev);ids.forEach(id=>n.add(id));lsSet(LS_READ,[...n]);return n;});
@@ -679,11 +687,15 @@ function MailChat(){
       setSummary("");setSumLoading(true);
       summarizeThread(selThread.mails).then(s=>{setSummary(s);setSummaryCache(prev=>{const n={...prev,[selThread.id]:s};lsSet(LS_SUMM,n);return n;});}).catch(e=>setSummary(`要約失敗: ${e.message}`)).finally(()=>setSumLoading(false));
     }
-    // double rAF: レイアウト確定後にスクロール（モバイルでは1回だと早すぎる）
-    requestAnimationFrame(()=>requestAnimationFrame(()=>chatBottomRef.current?.scrollIntoView({behavior:'instant'})));
-    // モバイル: スレッド選択でメインパネルに切り替え（先に切り替えてからスクロール）
-    if(isMobile) setShowSidebar(false);
-  },[selectedThreadId,isMobile]); // eslint-disable-line
+    if(isMobile){
+      // モバイル: 先にパネルを表示 → 再レンダリング完了後にスクロール
+      setShowSidebar(false);
+      setTimeout(()=>scrollToBottom(false), 80);
+    } else {
+      // PC: double rAF で確実に
+      requestAnimationFrame(()=>requestAnimationFrame(()=>scrollToBottom(false)));
+    }
+  },[selectedThreadId,isMobile,scrollToBottom]); // eslint-disable-line
 
   // ボトム入力バーからの送信
   const handleBottomSend=async()=>{
@@ -706,7 +718,7 @@ function MailChat(){
     };
     setEmails(prev=>[...prev,optMail]);
     setReplyText("");setReplyFiles([]);setReplyFromAccId(null);
-    requestAnimationFrame(()=>requestAnimationFrame(()=>chatBottomRef.current?.scrollIntoView({behavior:'smooth'})));
+    requestAnimationFrame(()=>requestAnimationFrame(()=>scrollToBottom(true)));
     try{
       const attachments=await Promise.all(filesSnap.map(async f=>({
         filename:f.name,
@@ -973,7 +985,7 @@ function MailChat(){
               </div>
 
               {/* チャット */}
-              <div style={{flex:1,overflowY:"auto",padding:isMobile?"10px 12px":"16px 20px",background:T.bg,WebkitOverflowScrolling:"touch"}}>
+              <div ref={chatAreaRef} style={{flex:1,overflowY:"auto",padding:isMobile?"10px 12px":"16px 20px",background:T.bg,WebkitOverflowScrolling:"touch"}}>
                 {(()=>{
                   const result=[];let lastDay=null;
                   selThread.mails.forEach((m,i)=>{
