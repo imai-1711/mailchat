@@ -697,6 +697,12 @@ function MailChat(){
     }
   },[selectedThreadId,isMobile,scrollToBottom]); // eslint-disable-line
 
+  // 同じスレッド内にメールが追加された時（送信後確定・新着など）も最下部へ
+  React.useEffect(()=>{
+    if(!selThread)return;
+    requestAnimationFrame(()=>requestAnimationFrame(()=>scrollToBottom(false)));
+  },[selThread?.mails?.length,scrollToBottom]); // eslint-disable-line
+
   // ボトム入力バーからの送信
   const handleBottomSend=async()=>{
     if(!replyText.trim()&&replyFiles.length===0)return;
