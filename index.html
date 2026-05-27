@@ -287,28 +287,41 @@ const DateSeparator=({label,T})=>(
   </div>
 );
 
-// 添付ファイル — 画像はビジュアルプレビュー、その他はファイルカード
+// 添付ファイル — 画像はビジュアルプレビュー、その他はファイルカード＋ダウンロードボタン
+const openAttachment=(att)=>{
+  if(!att.dataUrl){alert("このファイルのデータはキャッシュにありません。\n更新ボタンで再取得してください。");return;}
+  // PDFや画像は新タブで開く、その他はダウンロード
+  const openInTab=att.mimeType&&(att.mimeType.startsWith("image/")||att.mimeType.includes("pdf"));
+  if(openInTab){window.open(att.dataUrl,"_blank");return;}
+  const a=document.createElement("a");
+  a.href=att.dataUrl;
+  a.download=att.filename||"attachment";
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+};
 const AttachmentBubble=({att,isSent,T})=>{
   const isImage=!!(att.mimeType&&att.mimeType.startsWith("image/"));
   const isPdf=!!(att.mimeType&&att.mimeType.includes("pdf"));
+  const hasData=!!att.dataUrl;
   const icon=attIcon(att.mimeType);
   const size=attSize(att.size);
   const wrapStyle={marginTop:6,marginLeft:isSent?"auto":"40px",maxWidth:"72%",display:"flex",flexDirection:"column",alignItems:isSent?"flex-end":"flex-start"};
   const cardBase={borderRadius:isSent?"14px 14px 4px 14px":"4px 14px 14px 14px",overflow:"hidden",border:"1px solid "+(isSent?"rgba(255,255,255,.2)":T.border),background:isSent?"rgba(255,255,255,.12)":T.hover};
+  const btnStyle={display:"flex",alignItems:"center",justifyContent:"center",gap:4,padding:"5px 10px",border:"none",borderRadius:6,cursor:hasData?"pointer":"not-allowed",fontSize:11,fontWeight:600,opacity:hasData?1:0.45,background:isSent?"rgba(255,255,255,.18)":"rgba(0,0,0,.07)",color:isSent?"#fff":T.text};
   if(isImage){
     return(
       <div style={wrapStyle}>
         <div style={{...cardBase,width:220}}>
           {att.dataUrl
-            ?<img src={att.dataUrl} alt={att.filename} style={{width:"100%",maxHeight:200,objectFit:"cover",display:"block"}}/>
+            ?<img src={att.dataUrl} alt={att.filename} onClick={()=>window.open(att.dataUrl,"_blank")} style={{width:"100%",maxHeight:200,objectFit:"cover",display:"block",cursor:"zoom-in"}}/>
             :<div style={{background:isSent?"rgba(0,0,0,.18)":"rgba(0,0,0,.05)",display:"flex",alignItems:"center",justifyContent:"center",height:120,fontSize:48,userSelect:"none",flexDirection:"column",gap:6}}>
                 <span>🖼</span>
-                <span style={{fontSize:11,color:isSent?"rgba(255,255,255,.4)":"rgba(0,0,0,.3)"}}>プレビュー不可</span>
+                <span style={{fontSize:11,color:isSent?"rgba(255,255,255,.4)":"rgba(0,0,0,.3)"}}>キャッシュなし（再取得で表示）</span>
               </div>
           }
-          <div style={{padding:"6px 10px"}}>
-            <div style={{fontSize:12,color:isSent?"rgba(255,255,255,.9)":T.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{att.filename}</div>
-            {size&&<div style={{fontSize:11,color:isSent?"rgba(255,255,255,.5)":T.textTer}}>{size}</div>}
+          <div style={{padding:"6px 10px 8px"}}>
+            <div style={{fontSize:12,color:isSent?"rgba(255,255,255,.9)":T.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",marginBottom:4}}>{att.filename}</div>
+            {size&&<div style={{fontSize:11,color:isSent?"rgba(255,255,255,.5)":T.textTer,marginBottom:6}}>{size}</div>}
+            <button style={btnStyle} onClick={()=>openAttachment(att)}>⬇ {hasData?"ダウンロード":"データなし"}</button>
           </div>
         </div>
       </div>
@@ -317,11 +330,14 @@ const AttachmentBubble=({att,isSent,T})=>{
   const fileColor=isPdf?"#EF4444":att.mimeType?.includes("sheet")||att.mimeType?.includes("excel")?"#10B981":att.mimeType?.includes("word")||att.mimeType?.includes("document")?"#3B82F6":"#6B7280";
   return(
     <div style={wrapStyle}>
-      <div style={{...cardBase,display:"flex",alignItems:"center",gap:10,padding:"8px 14px",minWidth:160,maxWidth:260}}>
+      <div style={{...cardBase,display:"flex",alignItems:"center",gap:10,padding:"8px 14px",minWidth:160,maxWidth:280}}>
         <div style={{width:36,height:36,borderRadius:8,background:fileColor,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>{icon}</div>
         <div style={{flex:1,minWidth:0}}>
           <div style={{color:isSent?"rgba(255,255,255,.9)":T.text,fontSize:13,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{att.filename}</div>
-          {size&&<div style={{color:isSent?"rgba(255,255,255,.5)":T.textTer,fontSize:11}}>{size}</div>}
+          {size&&<div style={{color:isSent?"rgba(255,255,255,.5)":T.textTer,fontSize:11,marginBottom:4}}>{size}</div>}
+          <button style={{...btnStyle,width:"100%"}} onClick={()=>openAttachment(att)}>
+            {isPdf?"📄 開く":"⬇ ダウンロード"}{!hasData&&" (データなし)"}
+          </button>
         </div>
       </div>
     </div>
