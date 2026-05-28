@@ -79,7 +79,7 @@
                   {
                       "parameters":  {
                                          "method":  "POST",
-        "url":  "http://192.168.1.106:5678/webhook/import-emails",
+        "url":  "https://n8n.niida-imai.work/webhook/import-emails",
                                          "sendBody":  true,
                                          "contentType":  "json",
                                          "specifyBody":  "json",

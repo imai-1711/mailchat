@@ -350,8 +350,12 @@ const ChatBubble=({mail,isSent,isUnread,isStarred,onStar,T})=>{
   const{text:stripped,hasQuote}=stripQuoted(mail.body||mail.snippet||"");
   const rawText=showFull?(mail.body||mail.snippet||""):stripped;
   const attachments=mail.attachments||[];
+  // インライン画像（CID参照）: 本文バブル内に埋め込み表示
+  const inlineImgs=attachments.filter(a=>a.isInline&&a.mimeType?.startsWith("image/")&&a.dataUrl);
+  // 通常添付: 別バブルとして表示
+  const regularAtts=attachments.filter(a=>!(a.isInline&&a.mimeType?.startsWith("image/")&&a.dataUrl));
   const isPending=!!mail._optimistic;
-  const showTextBubble=!!(rawText||(!attachments.length));
+  const showTextBubble=!!(rawText||inlineImgs.length||(!attachments.length));
   return(
     <div style={{marginBottom:12,opacity:isPending?0.65:1,transition:"opacity .3s"}}>
       <div style={{display:"flex",flexDirection:isSent?"row-reverse":"row",alignItems:"flex-end",gap:8}}>
@@ -365,6 +369,8 @@ const ChatBubble=({mail,isSent,isUnread,isStarred,onStar,T})=>{
             boxShadow:"0 1px 3px rgba(0,0,0,.08)"}}>
             {rawText||" "}
             {hasQuote&&<div onClick={()=>setShowFull(f=>!f)} style={{marginTop:8,fontSize:11,color:isSent?"rgba(255,255,255,.6)":T.textTer,cursor:"pointer",userSelect:"none"}}>{showFull?"▲ 引用を折りたたむ":"▼ 引用文を表示"}</div>}
+            {/* CIDインライン画像を本文バブル内に埋め込み */}
+            {inlineImgs.map((att,i)=><img key={i} src={att.dataUrl} alt={att.filename||"画像"} onClick={()=>window.open(att.dataUrl,"_blank")} style={{maxWidth:"100%",marginTop:rawText?8:0,borderRadius:6,display:"block",cursor:"zoom-in"}}/>)}
           </div>}
           <div style={{display:"flex",alignItems:"center",gap:6,marginTop:4,justifyContent:isSent?"flex-end":"flex-start"}}>
             <span style={{fontSize:11,color:T.textTer}}>{isPending?"送信中…":formatDate(mail.date)}</span>
@@ -374,8 +380,8 @@ const ChatBubble=({mail,isSent,isUnread,isStarred,onStar,T})=>{
         </div>
         {isSent&&<div style={{width:32,height:32,borderRadius:"50%",background:T.highlight,color:T.accent,display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:700,flexShrink:0}}>自</div>}
       </div>
-      {/* 添付ファイルを別バブルとして表示 */}
-      {attachments.map((att,i)=><AttachmentBubble key={i} att={att} isSent={isSent} T={T}/>)}
+      {/* 通常添付ファイルを別バブルとして表示（インライン画像は除く） */}
+      {regularAtts.map((att,i)=><AttachmentBubble key={i} att={att} isSent={isSent} T={T}/>)}
     </div>
   );
 };
