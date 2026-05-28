@@ -2,7 +2,7 @@
   "name": "MailChat",
   "short_name": "MailChat",
   "description": "チャット風IMAPウェブメーラー",
-  "start_url": "/",
+  "start_url": "./",
   "display": "standalone",
   "orientation": "portrait-primary",
   "background_color": "#0D1117",
@@ -21,7 +21,7 @@
       "name": "新規作成",
       "short_name": "作成",
       "description": "新しいメールを作成",
-      "url": "/?compose=new",
+      "url": "./?compose=new",
       "icons": [{"src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'><text y='.9em' font-size='90'>✉</text></svg>", "sizes": "96x96"}]
     }
   ],

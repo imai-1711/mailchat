@@ -7,7 +7,7 @@
 
   <!-- PWA -->
   <link rel="icon" href="data:,"/>
-  <link rel="manifest" href="/manifest.json"/>
+  <link rel="manifest" href="manifest.json"/>
   <meta name="theme-color" content="#4A5EDB"/>
   <meta name="mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-capable" content="yes"/>
@@ -700,7 +700,7 @@ function MailChat(){
       due.forEach(t=>{
         toast(`⏰ スヌーズ: ${t.title}`,'warn');
         if('Notification' in window && Notification.permission==='granted'){
-          new Notification('MailChat スヌーズ',{body:t.title,icon:'/manifest.json'});
+          new Notification('MailChat スヌーズ',{body:t.title,icon:'manifest.json'});
         }
       });
       setTasks(prev=>{const n=prev.map(t=>due.some(d=>d.id===t.id)?{...t,snoozed:true,snoozeAt:null}:t);lsSet(LS_TASKS,n);return n;});
@@ -1260,7 +1260,7 @@ root.render(<MailChat/>);
 // 本番 or ?sw=1 クエリ付きの場合のみ有効化
 if ('serviceWorker' in navigator && (location.hostname !== 'localhost' || location.search.includes('sw=1'))) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js')
+    navigator.serviceWorker.register('./sw.js')
       .then(()=>{console.log('[SW] 登録完了');})
       .catch(()=>{});
   });

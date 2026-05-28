@@ -1,6 +1,6 @@
 // MailChat Service Worker
 const CACHE = 'mailchat-v5';
-const ASSETS = ['/manifest.json'];
+const ASSETS = ['./manifest.json'];
 
 // インストール: manifest だけプリキャッシュ（index.html は network-first のためプリキャッシュしない）
 self.addEventListener('install', e => {
@@ -44,7 +44,7 @@ self.addEventListener('fetch', e => {
           }
           return res;
         })
-        .catch(() => caches.match(e.request).then(cached => cached || caches.match('/index.html')))
+        .catch(() => caches.match(e.request).then(cached => cached || caches.match('./index.html')))
     );
     return;
   }
@@ -59,7 +59,7 @@ self.addEventListener('fetch', e => {
           caches.open(CACHE).then(c => c.put(e.request, clone));
         }
         return res;
-      }).catch(() => caches.match('/index.html'));
+      }).catch(() => caches.match('./index.html'));
     })
   );
 });
@@ -71,8 +71,8 @@ self.addEventListener('push', e => {
   e.waitUntil(
     self.registration.showNotification(data.title || 'MailChat', {
       body: data.body || '新着メールがあります',
-      icon: '/manifest.json',
-      badge: '/manifest.json',
+      icon: './manifest.json',
+      badge: './manifest.json',
       tag: 'mailchat-notification',
       renotify: true,
     })

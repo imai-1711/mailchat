@@ -7,33 +7,62 @@ const pa=(s)=>{if(!s)return{n:"不明",a:""};const fixed=fixMojibake(decodeWord(
 const getBody=(item)=>{let txt=item.textPlain||item.text||"";if(txt&&(txt.includes("\\x1b")||/\\$B|\\(B/.test(txt))){try{txt=new TextDecoder("iso-2022-jp").decode(Buffer.from(txt,"latin1"));}catch{txt=txt.replace(/\\x1b\\$[B@J]/g,"").replace(/\\x1b\\([BHJ]/g,"").trim();}}txt=fixMojibake(txt);if(txt.trim())return txt.substring(0,3000);const html=fixMojibake(item.textHtml||item.html||"");return html.replace(/<style[\\s\\S]*?<\\/style>/gi,"").replace(/<script[\\s\\S]*?<\\/script>/gi,"").replace(/<br\\s*\\/?>/gi,"\\n").replace(/<p[^>]*>/gi,"\\n").replace(/<[^>]*>/g," ").replace(/&nbsp;/g," ").replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&quot;/g,'"').replace(/\\s+/g," ").trim().substring(0,3000);};
 // HTMLメール本文（CID参照を含む場合に保存）
 const getHtmlBody=(item)=>{const html=fixMojibake(item.textHtml||item.html||"");if(!html||!html.includes("cid:"))return "";return html.substring(0,50000);};
-const getAttachments=(item,bin)=>{
+const isFsRef=(d)=>!d||d==="filesystem-v2";
+const getAttachments=async(item,bin,itemRef)=>{
   const jsonAtts=item.attachments||[];
-  const binEntries=bin?Object.entries(bin).filter(([k])=>/^attachment/i.test(k)):[];
+  const binEntries=bin?Object.entries(bin):[];
   let merged;
   if(jsonAtts.length>0){
-    merged=jsonAtts.map((a,i)=>{
-      const bk="attachment_"+i;
-      const bv=bin&&(bin[bk]||(binEntries[i]?binEntries[i][1]:null));
-      return {...a,content:a.content||(bv?bv.data:"")||""};
-    });
+    merged=await Promise.all(jsonAtts.map(async(a,i)=>{
+      const bKey=binEntries[i]?.[0]||null;
+      const bv=binEntries[i]?.[1]||null;
+      let content=a.content||"";
+      if(isFsRef(content)&&bKey){
+        try{const buf=await this.helpers.getBinaryDataBuffer(itemRef,bKey);content=buf.toString("base64");}catch{}
+      }
+      return{
+        ...a,
+        filename:a.filename||a.name||bv?.fileName||bv?.filename||("attachment_"+i),
+        mimeType:a.mimeType||a.contentType||a.type||bv?.mimeType||"application/octet-stream",
+        size:a.size||bv?.fileSize||0,
+        content,
+        contentId:a.contentId||a.cid||bv?.contentId||bv?.id||"",
+      };
+    }));
   }else{
-    merged=binEntries.map(([k,v])=>({
-      filename:v.fileName||v.filename||k,
-      mimeType:v.mimeType||"application/octet-stream",
-      size:v.fileSize||0,
-      content:v.data||"",
-      contentDisposition:"attachment",
+    merged=await Promise.all(binEntries.map(async([k,v])=>{
+      let content=v.data||"";
+      if(isFsRef(content)){
+        try{const buf=await this.helpers.getBinaryDataBuffer(itemRef,k);content=buf.toString("base64");}catch{}
+      }
+      return{
+        filename:v.fileName||v.filename||k,
+        mimeType:v.mimeType||"application/octet-stream",
+        size:v.fileSize||0,
+        content,
+        contentId:v.contentId||v.id||"",
+        contentDisposition:v.contentDisposition||"attachment",
+      };
     }));
   }
-  return merged.filter(a=>a&&(a.filename||a.name||(a.mimeType&&a.mimeType.startsWith("image/"))||(a.contentType&&a.contentType.startsWith("image/")))).map(a=>{
-    const mime=a.mimeType||a.contentType||a.type||"application/octet-stream";
-    const sz=typeof a.size==="number"?a.size:typeof a.content==="string"&&a.content?Buffer.from(a.content,"base64").length:0;
-    const dataUrl=(typeof a.content==="string"&&a.content&&sz<=5*1024*1024)?("data:"+(mime||"application/octet-stream")+";base64,"+a.content):undefined;
-    // contentId を保持（CID参照によるインライン画像置換のため）
-    const contentId=a.contentId||a.cid||"";
-    return{filename:fixMojibake(decodeWord(a.filename||a.name||(mime.startsWith("image/")?"image."+((mime).split("/")[1]||"jpg"):"attachment"))),mimeType:mime,size:sz,isInline:a.contentDisposition==="inline"||!!a.contentId,contentId,dataUrl};
-  });
+  return merged
+    .filter(a=>a&&(a.filename||a.name||a.content||a.contentId))
+    .map(a=>{
+      const mime=a.mimeType||a.contentType||a.type||"application/octet-stream";
+      const sz=typeof a.size==="number"?a.size:typeof a.content==="string"&&a.content?Buffer.from(a.content,"base64").length:0;
+      const dataUrl=(typeof a.content==="string"&&a.content&&!isFsRef(a.content)&&sz<=5*1024*1024)
+        ?("data:"+mime+";base64,"+a.content)
+        :undefined;
+      const contentId=(a.contentId||a.cid||"").replace(/^<|>$/g,"");
+      return{
+        filename:fixMojibake(decodeWord(a.filename||a.name||(mime.startsWith("image/")?"image."+((mime).split("/")[1]||"jpg"):"attachment"))),
+        mimeType:mime,
+        size:sz,
+        isInline:a.contentDisposition==="inline"||!!contentId,
+        contentId,
+        dataUrl,
+      };
+    });
 };
 const sd=$getWorkflowStaticData("global");
 if(!sd.emails)sd.emails={};
@@ -46,7 +75,7 @@ for(let idx=0;idx<items.length;idx++){
   const htmlBody=getHtmlBody(item);
   const subj=fixMojibake(decodeWord(item.subject||"(件名なし)"));
   const mid=item.metadata?.["message-id"]||String(item.attributes?.uid||("recv_"+Math.random()));
-  const atts=getAttachments(item,bin);
+  const atts=await getAttachments(item,bin,idx);
   const newEntry={id:String(item.attributes?.uid||Math.random()),messageId:mid,from:from.a,fromName:from.n,to:to.a,subject:subj,body,htmlBody,snippet:body.replace(/<[^>]*>/g,"").substring(0,120),date:item.date||new Date().toISOString(),read:!!(item.attributes?.flags?.["\\\\Seen"]),isSent:false,accountId:"work",inReplyTo:item.metadata?.["in-reply-to"]||"",references:item.metadata?.["references"]||"",attachments:atts};
   const existed=!!sd.emails[mid];
   if(!existed){sd.emails[mid]=newEntry;}else{if(atts.length>0)sd.emails[mid].attachments=atts;if(htmlBody)sd.emails[mid].htmlBody=htmlBody;const eb=sd.emails[mid].body||"";if(body.trim()&&(!eb.trim()||/[\\xC0-\\xFF]/.test(eb))){sd.emails[mid].body=body;sd.emails[mid].snippet=newEntry.snippet;}}
@@ -62,33 +91,62 @@ const pa=(s)=>{if(!s)return{n:"不明",a:""};const fixed=fixMojibake(decodeWord(
 const getBody=(item)=>{let txt=item.textPlain||item.text||"";if(txt&&(txt.includes("\\x1b")||/\\$B|\\(B/.test(txt))){try{txt=new TextDecoder("iso-2022-jp").decode(Buffer.from(txt,"latin1"));}catch{txt=txt.replace(/\\x1b\\$[B@J]/g,"").replace(/\\x1b\\([BHJ]/g,"").trim();}}txt=fixMojibake(txt);if(txt.trim())return txt.substring(0,3000);const html=fixMojibake(item.textHtml||item.html||"");return html.replace(/<style[\\s\\S]*?<\\/style>/gi,"").replace(/<script[\\s\\S]*?<\\/script>/gi,"").replace(/<br\\s*\\/?>/gi,"\\n").replace(/<p[^>]*>/gi,"\\n").replace(/<[^>]*>/g," ").replace(/&nbsp;/g," ").replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&quot;/g,'"').replace(/\\s+/g," ").trim().substring(0,3000);};
 // HTMLメール本文（CID参照を含む場合に保存）
 const getHtmlBody=(item)=>{const html=fixMojibake(item.textHtml||item.html||"");if(!html||!html.includes("cid:"))return "";return html.substring(0,50000);};
-const getAttachments=(item,bin)=>{
+const isFsRef=(d)=>!d||d==="filesystem-v2";
+const getAttachments=async(item,bin,itemRef)=>{
   const jsonAtts=item.attachments||[];
-  const binEntries=bin?Object.entries(bin).filter(([k])=>/^attachment/i.test(k)):[];
+  const binEntries=bin?Object.entries(bin):[];
   let merged;
   if(jsonAtts.length>0){
-    merged=jsonAtts.map((a,i)=>{
-      const bk="attachment_"+i;
-      const bv=bin&&(bin[bk]||(binEntries[i]?binEntries[i][1]:null));
-      return {...a,content:a.content||(bv?bv.data:"")||""};
-    });
+    merged=await Promise.all(jsonAtts.map(async(a,i)=>{
+      const bKey=binEntries[i]?.[0]||null;
+      const bv=binEntries[i]?.[1]||null;
+      let content=a.content||"";
+      if(isFsRef(content)&&bKey){
+        try{const buf=await this.helpers.getBinaryDataBuffer(itemRef,bKey);content=buf.toString("base64");}catch{}
+      }
+      return{
+        ...a,
+        filename:a.filename||a.name||bv?.fileName||bv?.filename||("attachment_"+i),
+        mimeType:a.mimeType||a.contentType||a.type||bv?.mimeType||"application/octet-stream",
+        size:a.size||bv?.fileSize||0,
+        content,
+        contentId:a.contentId||a.cid||bv?.contentId||bv?.id||"",
+      };
+    }));
   }else{
-    merged=binEntries.map(([k,v])=>({
-      filename:v.fileName||v.filename||k,
-      mimeType:v.mimeType||"application/octet-stream",
-      size:v.fileSize||0,
-      content:v.data||"",
-      contentDisposition:"attachment",
+    merged=await Promise.all(binEntries.map(async([k,v])=>{
+      let content=v.data||"";
+      if(isFsRef(content)){
+        try{const buf=await this.helpers.getBinaryDataBuffer(itemRef,k);content=buf.toString("base64");}catch{}
+      }
+      return{
+        filename:v.fileName||v.filename||k,
+        mimeType:v.mimeType||"application/octet-stream",
+        size:v.fileSize||0,
+        content,
+        contentId:v.contentId||v.id||"",
+        contentDisposition:v.contentDisposition||"attachment",
+      };
     }));
   }
-  return merged.filter(a=>a&&(a.filename||a.name||(a.mimeType&&a.mimeType.startsWith("image/"))||(a.contentType&&a.contentType.startsWith("image/")))).map(a=>{
-    const mime=a.mimeType||a.contentType||a.type||"application/octet-stream";
-    const sz=typeof a.size==="number"?a.size:typeof a.content==="string"&&a.content?Buffer.from(a.content,"base64").length:0;
-    const dataUrl=(typeof a.content==="string"&&a.content&&sz<=5*1024*1024)?("data:"+(mime||"application/octet-stream")+";base64,"+a.content):undefined;
-    // contentId を保持（CID参照によるインライン画像置換のため）
-    const contentId=a.contentId||a.cid||"";
-    return{filename:fixMojibake(decodeWord(a.filename||a.name||(mime.startsWith("image/")?"image."+((mime).split("/")[1]||"jpg"):"attachment"))),mimeType:mime,size:sz,isInline:a.contentDisposition==="inline"||!!a.contentId,contentId,dataUrl};
-  });
+  return merged
+    .filter(a=>a&&(a.filename||a.name||a.content||a.contentId))
+    .map(a=>{
+      const mime=a.mimeType||a.contentType||a.type||"application/octet-stream";
+      const sz=typeof a.size==="number"?a.size:typeof a.content==="string"&&a.content?Buffer.from(a.content,"base64").length:0;
+      const dataUrl=(typeof a.content==="string"&&a.content&&!isFsRef(a.content)&&sz<=5*1024*1024)
+        ?("data:"+mime+";base64,"+a.content)
+        :undefined;
+      const contentId=(a.contentId||a.cid||"").replace(/^<|>$/g,"");
+      return{
+        filename:fixMojibake(decodeWord(a.filename||a.name||(mime.startsWith("image/")?"image."+((mime).split("/")[1]||"jpg"):"attachment"))),
+        mimeType:mime,
+        size:sz,
+        isInline:a.contentDisposition==="inline"||!!contentId,
+        contentId,
+        dataUrl,
+      };
+    });
 };
 const sd=$getWorkflowStaticData("global");
 if(!sd.emails)sd.emails={};
@@ -101,7 +159,7 @@ for(let idx=0;idx<items.length;idx++){
   const htmlBody=getHtmlBody(item);
   const subj=fixMojibake(decodeWord(item.subject||"(件名なし)"));
   const mid=item.metadata?.["message-id"]||String(item.attributes?.uid||("sent_"+Math.random()));
-  const atts=getAttachments(item,bin);
+  const atts=await getAttachments(item,bin,idx);
   const newEntry={id:String(item.attributes?.uid||Math.random()),messageId:mid,from:from.a,fromName:from.n,to:to.a,subject:subj,body,htmlBody,snippet:body.replace(/<[^>]*>/g,"").substring(0,120),date:item.date||new Date().toISOString(),read:true,isSent:true,accountId:"work",inReplyTo:item.metadata?.["in-reply-to"]||"",references:item.metadata?.["references"]||"",attachments:atts};
   const existed=!!sd.emails[mid];
   if(!existed){
