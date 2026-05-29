@@ -290,8 +290,10 @@ const generateReplies=async(mail,sp)=>{
 // ═══════════════════════════════════════════════
 //  n8n
 // ═══════════════════════════════════════════════
-const fetchEmails=async(accountId)=>{
-  const res=await fetch(`${CONFIG.N8N_BASE_URL}${CONFIG.FETCH_WEBHOOK}?accountId=${accountId}`);
+const fetchEmails=async(accountId,since)=>{
+  const params=new URLSearchParams({accountId});
+  if(since)params.set("since",since);
+  const res=await fetch(`${CONFIG.N8N_BASE_URL}${CONFIG.FETCH_WEBHOOK}?${params}`);
   if(!res.ok)throw new Error(`メール取得エラー: ${res.status}`);
   const d=await res.json();return Array.isArray(d)?d:(d.emails||[]);
 };
@@ -651,6 +653,7 @@ function MailChat(){
   const[searchQ,      setSearchQ]      =React.useState("");
   const[loading,      setLoading]      =React.useState(false);
   const[fetchError,   setFetchError]   =React.useState("");
+  const[lastFetchAt,  setLastFetchAt]  =React.useState(null); // ISO文字列: 最後に取得した最新メールの日時
   const[n8nOnline,    setN8nOnline]    =React.useState(null);
   const[summary,      setSummary]      =React.useState("");
   const[sumLoading,   setSumLoading]   =React.useState(false);
@@ -735,12 +738,40 @@ function MailChat(){
       const seen=new Set();
       const all=results.flat().filter(m=>{const k=getMailKey(m);if(seen.has(k))return false;seen.add(k);return true;});
       setEmails(all);
+      // 最新メール日時を記録（次回ポーリングで差分取得に使う）
+      const latest=all.reduce((mx,m)=>(!mx||new Date(m.date)>new Date(mx))?m.date:mx,"");
+      if(latest)setLastFetchAt(latest);
       toast(`${all.length}件取得しました`,'success');
     }catch(e){
       setFetchError(e.message);
       toast(`取得失敗: ${e.message}`,'error');
     }finally{setLoading(false);}
   };
+
+  // 差分ポーリング: 60秒ごとに since=lastFetchAt で新着のみ取得してマージ
+  React.useEffect(()=>{
+    if(!lastFetchAt)return;
+    const poll=async()=>{
+      try{
+        const ids=activeAcc==="all"?CONFIG.ACCOUNTS.map(a=>a.id):[activeAcc];
+        const results=await Promise.all(ids.map(id=>fetchEmails(id,lastFetchAt).then(mails=>mails.map(m=>({...m,accountId:m.accountId||id})))));
+        const newMails=results.flat();
+        if(!newMails.length)return;
+        setEmails(prev=>{
+          const map=new Map(prev.map(m=>[getMailKey(m),m]));
+          let added=0;
+          for(const m of newMails){const k=getMailKey(m);if(!map.has(k)){map.set(k,m);added++;}else{map.set(k,{...map.get(k),...m});}}
+          if(!added)return prev; // 変更なし → 再レンダリングしない
+          toast(`${added}件の新着メール`,'success');
+          return [...map.values()];
+        });
+        const latest=newMails.reduce((mx,m)=>(!mx||new Date(m.date)>new Date(mx))?m.date:mx,"");
+        if(latest)setLastFetchAt(prev=>(!prev||new Date(latest)>new Date(prev))?latest:prev);
+      }catch(e){console.warn("ポーリング失敗:",e.message);}
+    };
+    const iv=setInterval(poll,60000);
+    return()=>clearInterval(iv);
+  },[lastFetchAt,activeAcc]); // eslint-disable-line
 
   const handleLearnStyle=async()=>{
     const sent=emails.filter(m=>m.isSent);

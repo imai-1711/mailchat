@@ -93,7 +93,9 @@ const getEmailsCode = `
 const fixMojibake=(str)=>{if(!str||typeof str!=="string")return str;if(!/[\\xC0-\\xFF]/.test(str))return str;try{const bytes=Buffer.from(str,"latin1");const decoded=new TextDecoder("utf-8").decode(bytes);if(/[　-鿿゠-ヿ぀-ゟ가-힯]/.test(decoded)&&!/[　-鿿]/.test(str))return decoded;}catch{}return str;};
 const fixEmail=(e)=>({...e,subject:fixMojibake(e.subject||""),body:fixMojibake(e.body||""),snippet:fixMojibake(e.snippet||""),fromName:fixMojibake(e.fromName||""),to:fixMojibake(e.to||""),});
 const sd=$getWorkflowStaticData("global");
-const all=[...Object.values(sd.inboxEmails||{}),...Object.values(sd.sentEmails||{}),...Object.values(sd.emails||{})].map(fixEmail);
+const since=$json?.query?.since||"";
+const sinceDate=since?new Date(since):null;
+const all=[...Object.values(sd.inboxEmails||{}),...Object.values(sd.sentEmails||{}),...Object.values(sd.emails||{})].map(fixEmail).filter(e=>!sinceDate||new Date(e.date)>sinceDate);
 all.sort((a,b)=>new Date(b.date)-new Date(a.date));
 return [{json:{emails:all,total:all.length,fetchedAt:new Date().toISOString()}}];
 `;
@@ -123,22 +125,7 @@ const imapInbox = trigger({
       mailbox: 'INBOX',
       postProcessAction: 'nothing',
       downloadAttachments: true,
-      options: { customEmailConfig: '["ALL"]', forceReconnect: 60, trackLastMessageId: false },
-    },
-    credentials: { imap: newCredential('IMAP account') },
-  },
-});
-
-const imapSent = trigger({
-  type: 'n8n-nodes-base.emailReadImap',
-  version: 2.1,
-  config: {
-    name: 'IMAP - INBOX.Sent',
-    parameters: {
-      mailbox: 'INBOX.Sent',
-      postProcessAction: 'nothing',
-      downloadAttachments: false,
-      options: { customEmailConfig: '["ALL"]', forceReconnect: 60, trackLastMessageId: false },
+      options: { customEmailConfig: '["ALL"]', forceReconnect: 60, trackLastMessageId: true },
     },
     credentials: { imap: newCredential('IMAP account') },
   },
@@ -148,12 +135,6 @@ const saveInbox = node({
   type: 'n8n-nodes-base.code',
   version: 2,
   config: { name: '受信を保存', parameters: { mode: 'runOnceForAllItems', jsCode: inboxCode } },
-});
-
-const saveSent = node({
-  type: 'n8n-nodes-base.code',
-  version: 2,
-  config: { name: '送信を保存', parameters: { mode: 'runOnceForAllItems', jsCode: sentCode } },
 });
 
 const webhookGet = trigger({
@@ -218,6 +199,5 @@ const importDone = node({
 
 export default workflow('sRUVnMcEkIYzmbCJ', 'MailChat - メール取得')
   .add(imapInbox).to(saveInbox)
-  .add(imapSent).to(saveSent)
   .add(webhookGet).to(getEmails).to(respond)
   .add(webhookImport).to(bulkSave).to(importDone);
