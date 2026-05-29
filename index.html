@@ -907,6 +907,7 @@ function MailChat(){
     if(filter==="unread")return t.mails.some(m=>!isRead(m)&&!isSelf(m.from));
     if(filter==="starred")return t.mails.some(m=>starred.has(getMailKey(m)));
     if(filter==="attach")return t.hasAttach;
+    if(filter==="sent")return t.mails.some(m=>m.isSent);
     return true;
   });
   if(sortBy==="sender")threads.sort((a,b)=>{const ca=getContact(a),cb=getContact(b);return ca.name.localeCompare(cb.name,"ja");});
@@ -984,7 +985,7 @@ function MailChat(){
         {/* フィルタ・ソート */}
         <div style={{padding:"6px 14px",borderBottom:`1px solid ${T.borderFaint}`}}>
           <div style={{display:"flex",gap:3,marginBottom:5}}>
-            {[["all","すべて"],["unread","未読"+(unreadCount>0?" ("+unreadCount+")":"")],["starred","⭐"],["attach","📎"]].map(([k,label])=>(
+            {[["all","すべて"],["unread","未読"+(unreadCount>0?" ("+unreadCount+")":"")],["sent","📤"+(sentCount>0?" "+sentCount:"")],["starred","⭐"],["attach","📎"]].map(([k,label])=>(
               <button key={k} onClick={()=>setFilter(k)} style={{flex:1,padding:"4px 3px",borderRadius:7,border:"none",background:filter===k?T.highlight:T.hover,color:filter===k?T.accent:T.textSec,fontSize:11,fontWeight:filter===k?700:400,cursor:"pointer"}}>
                 {label}
               </button>
