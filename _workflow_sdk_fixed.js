@@ -131,10 +131,31 @@ const imapInbox = trigger({
   },
 });
 
+const imapSent = trigger({
+  type: 'n8n-nodes-base.emailReadImap',
+  version: 2.1,
+  config: {
+    name: 'IMAP - INBOX.Sent',
+    parameters: {
+      mailbox: 'INBOX.Sent',
+      postProcessAction: 'nothing',
+      downloadAttachments: false,
+      options: { customEmailConfig: '["ALL"]', forceReconnect: 60, trackLastMessageId: false },
+    },
+    credentials: { imap: newCredential('IMAP account') },
+  },
+});
+
 const saveInbox = node({
   type: 'n8n-nodes-base.code',
   version: 2,
   config: { name: '受信を保存', parameters: { mode: 'runOnceForAllItems', jsCode: inboxCode } },
+});
+
+const saveSent = node({
+  type: 'n8n-nodes-base.code',
+  version: 2,
+  config: { name: '送信を保存', parameters: { mode: 'runOnceForAllItems', jsCode: sentCode } },
 });
 
 const webhookGet = trigger({
@@ -199,5 +220,6 @@ const importDone = node({
 
 export default workflow('sRUVnMcEkIYzmbCJ', 'MailChat - メール取得')
   .add(imapInbox).to(saveInbox)
+  .add(imapSent).to(saveSent)
   .add(webhookGet).to(getEmails).to(respond)
   .add(webhookImport).to(bulkSave).to(importDone);
