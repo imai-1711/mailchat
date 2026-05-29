@@ -30,6 +30,21 @@
     .ctx-item{padding:8px 14px;font-size:13px;cursor:pointer;border-radius:7px;display:flex;align-items:center;gap:8px;}
     .ctx-item:hover{filter:brightness(.95);}
     .ctx-sep{height:1px;margin:3px 0;}
+    /* HTML メール本文レンダリング (Spike 風) */
+    .mail-html-body{max-width:100%;overflow-x:auto;word-break:break-word;line-height:1.65;font-size:13.5px;}
+    .mail-html-body img{max-width:100%;height:auto;border-radius:8px;margin:5px 0;display:block;cursor:zoom-in;}
+    .mail-html-body a{color:#0084ff;word-break:break-all;text-decoration:underline;}
+    .mail-html-body blockquote{border-left:3px solid #d1d5db;padding-left:12px;margin:8px 0;color:#6b7280;}
+    .mail-html-body table{max-width:100%;border-collapse:collapse;font-size:12px;display:block;overflow-x:auto;}
+    .mail-html-body td,.mail-html-body th{padding:4px 8px;border:1px solid #e5e7eb;vertical-align:top;}
+    .mail-html-body p{margin-bottom:5px;}
+    .mail-html-body p:last-child{margin-bottom:0;}
+    .mail-html-body h1,.mail-html-body h2,.mail-html-body h3,.mail-html-body h4{font-weight:600;margin:6px 0 3px;}
+    .mail-html-body pre,.mail-html-body code{font-family:monospace;font-size:12px;background:rgba(0,0,0,.06);padding:2px 4px;border-radius:3px;}
+    body[data-dark="true"] .mail-html-body a{color:#6B7FEE;}
+    body[data-dark="true"] .mail-html-body blockquote{border-left-color:#30363D;color:#8B949E;}
+    body[data-dark="true"] .mail-html-body td,body[data-dark="true"] .mail-html-body th{border-color:#30363D;}
+    body[data-dark="true"] .mail-html-body pre,body[data-dark="true"] .mail-html-body code{background:rgba(255,255,255,.08);}
   </style>
 </head>
 <body>
@@ -250,11 +265,15 @@ const renderBodyHtml=(html,attachments)=>{
       }
     }
   });
-  return DOMPurify.sanitize(processed,{
+  // 未解決の cid: 参照を img ごと除去（broken image 非表示）
+  processed=processed.replace(/<img[^>]*\ssrc=["']cid:[^"']*["'][^>]*\/?>/gi,"");
+  // 画像クリックで新タブ表示（DOMPurify AFTER_SANITIZE_ATTRIBUTES で差し込み）
+  const clean=DOMPurify.sanitize(processed,{
     ALLOWED_TAGS:["p","br","b","strong","i","em","u","s","a","img","div","span","pre","code","blockquote","h1","h2","h3","h4","ul","ol","li","table","tr","td","th","tbody","thead","hr"],
     ALLOWED_ATTR:["href","src","alt","style","class","target","width","height","colspan","rowspan"],
     FORCE_BODY:true,
   });
+  return clean;
 };
 const summarizeThread=(mails)=>claudeRequest("メール要約アシスタント。スレッドを1〜2文で要約。要対応なら「要対応：」を先頭に。",mails.map(m=>`From:${m.from}\n${m.body||m.snippet||""}`).join("\n\n---\n\n"));
 const detectSpam=async(mail)=>JSON.parse((await claudeRequest(`スパム検出AI。JSON{"score":0-100,"verdict":"スパム"|"疑わしい"|"正常","reason":"1文"}のみ返す。`,`From:${mail.from}\nSubject:${mail.subject}\n\n${mail.body||""}`)).trim());
@@ -347,20 +366,16 @@ const AttachmentBubble=({att,isSent,T})=>{
   if(isImage){
     return(
       <div style={wrapStyle}>
-        <div style={{...cardBase,width:220}}>
-          {att.dataUrl
-            ?<img src={att.dataUrl} alt={att.filename} onClick={()=>window.open(att.dataUrl,"_blank")} style={{width:"100%",maxHeight:200,objectFit:"cover",display:"block",cursor:"zoom-in"}}/>
-            :<div style={{background:isSent?"rgba(0,0,0,.18)":"rgba(0,0,0,.05)",display:"flex",alignItems:"center",justifyContent:"center",height:120,fontSize:48,userSelect:"none",flexDirection:"column",gap:6}}>
-                <span>🖼</span>
-                <span style={{fontSize:11,color:isSent?"rgba(255,255,255,.4)":"rgba(0,0,0,.3)"}}>キャッシュなし（再取得で表示）</span>
-              </div>
-          }
-          <div style={{padding:"6px 10px 8px"}}>
-            <div style={{fontSize:12,color:isSent?"rgba(255,255,255,.9)":T.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",marginBottom:4}}>{att.filename}</div>
-            {size&&<div style={{fontSize:11,color:isSent?"rgba(255,255,255,.5)":T.textTer,marginBottom:6}}>{size}</div>}
-            <button style={btnStyle} onClick={()=>openAttachment(att)}>⬇ {hasData?"ダウンロード":"データなし"}</button>
-          </div>
-        </div>
+        {att.dataUrl
+          ?<div style={{borderRadius:12,overflow:"hidden",border:"1px solid "+(isSent?"rgba(255,255,255,.15)":T.borderFaint),cursor:"zoom-in",maxWidth:"100%"}} onClick={()=>window.open(att.dataUrl,"_blank")}>
+              <img src={att.dataUrl} alt={att.filename||"画像"} style={{width:"100%",maxHeight:320,objectFit:"contain",display:"block",background:isSent?"rgba(0,0,0,.15)":T.hover}}/>
+              {att.filename&&<div style={{padding:"4px 10px 5px",fontSize:11,color:isSent?"rgba(255,255,255,.5)":T.textTer,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{att.filename}{size?" · "+size:""}</div>}
+            </div>
+          :<div style={{...cardBase,display:"flex",alignItems:"center",justifyContent:"center",height:100,flexDirection:"column",gap:6,padding:"0 16px"}}>
+              <span style={{fontSize:36,opacity:.4}}>🖼</span>
+              <span style={{fontSize:11,color:isSent?"rgba(255,255,255,.4)":T.textTer}}>キャッシュなし（再取得で表示）</span>
+            </div>
+        }
       </div>
     );
   }
@@ -414,7 +429,7 @@ const ChatBubble=({mail,isSent,isUnread,isStarred,onStar,T,isContinuous})=>{
         <div style={{maxWidth:"72%"}}>
           {!isSent&&!isContinuous&&<div style={{fontSize:11,color:T.textSec,marginBottom:3,fontWeight:500}}>{mail.fromName||mail.from}</div>}
           {showTextBubble&&(htmlSafe
-            ?<div dangerouslySetInnerHTML={{__html:htmlSafe}} style={{...bubbleStyle,whiteSpace:"normal",overflow:"hidden"}}/>
+            ?<div dangerouslySetInnerHTML={{__html:htmlSafe}} className="mail-html-body" onClick={e=>{const img=e.target.closest("img");if(img?.src)window.open(img.src,"_blank");}} style={{...bubbleStyle,whiteSpace:"normal",overflow:"hidden"}}/>
             :<div style={{...bubbleStyle,whiteSpace:"pre-wrap"}}>
               {rawText||" "}
               {hasQuote&&<div onClick={()=>setShowFull(f=>!f)} style={{marginTop:8,fontSize:11,color:isSent?"rgba(255,255,255,.6)":T.textTer,cursor:"pointer",userSelect:"none"}}>{showFull?"▲ 引用を折りたたむ":"▼ 引用文を表示"}</div>}

@@ -20,26 +20,31 @@ sent_esc  = escape_for_template_literal(sent_raw)
 
 # メールを返す and 一括保存 are short enough to inline without escaping issues
 # (their backslashes are already in the live workflow and known-correct)
+# getEmailsCode: merge sd.inboxEmails + sd.sentEmails + sd.emails (migration)
 get_emails_raw = r"""
 const fixMojibake=(str)=>{if(!str||typeof str!=="string")return str;if(!/[\xC0-\xFF]/.test(str))return str;try{const bytes=Buffer.from(str,"latin1");const decoded=new TextDecoder("utf-8").decode(bytes);if(/[　-鿿゠-ヿ぀-ゟ가-힯]/.test(decoded)&&!/[　-鿿]/.test(str))return decoded;}catch{}return str;};
 const fixEmail=(e)=>({...e,subject:fixMojibake(e.subject||""),body:fixMojibake(e.body||""),snippet:fixMojibake(e.snippet||""),fromName:fixMojibake(e.fromName||""),to:fixMojibake(e.to||""),});
 const sd=$getWorkflowStaticData("global");
-const all=Object.values(sd.emails||{}).map(fixEmail);
+const all=[...Object.values(sd.inboxEmails||{}),...Object.values(sd.sentEmails||{}),...Object.values(sd.emails||{})].map(fixEmail);
 all.sort((a,b)=>new Date(b.date)-new Date(a.date));
 return [{json:{emails:all,total:all.length,fetchedAt:new Date().toISOString()}}];
 """
 
+# bulkSaveCode: route by isSent flag to sd.sentEmails or sd.inboxEmails
 bulk_save_raw = r"""
 const sd=$getWorkflowStaticData("global");
-if(!sd.emails)sd.emails={};
+if(!sd.inboxEmails)sd.inboxEmails={};
+if(!sd.sentEmails)sd.sentEmails={};
 const incoming=$json.body?.emails||[];
 let added=0,updated=0;
 for(const m of incoming){
   if(!m.messageId)continue;
-  if(!sd.emails[m.messageId]){sd.emails[m.messageId]=m;added++;}
-  else{const ex=sd.emails[m.messageId];sd.emails[m.messageId]={...ex,body:m.body||ex.body,htmlBody:m.htmlBody||ex.htmlBody||"",snippet:m.snippet||ex.snippet,attachments:m.attachments||ex.attachments||[],inReplyTo:m.inReplyTo||ex.inReplyTo||"",references:m.references||ex.references||""};updated++;}
+  const store=m.isSent?sd.sentEmails:sd.inboxEmails;
+  if(!store[m.messageId]){store[m.messageId]=m;added++;}
+  else{const ex=store[m.messageId];store[m.messageId]={...ex,body:m.body||ex.body,htmlBody:m.htmlBody||ex.htmlBody||"",snippet:m.snippet||ex.snippet,attachments:m.attachments||ex.attachments||[],inReplyTo:m.inReplyTo||ex.inReplyTo||"",references:m.references||ex.references||""};updated++;}
 }
-return [{json:{ok:true,added,updated,total:Object.keys(sd.emails).length}}];
+const total=Object.keys(sd.inboxEmails).length+Object.keys(sd.sentEmails).length;
+return [{json:{ok:true,added,updated,total}}];
 """
 
 get_emails_esc = escape_for_template_literal(get_emails_raw)
@@ -78,7 +83,7 @@ const imapSent = trigger({{
     parameters: {{
       mailbox: 'INBOX.Sent',
       postProcessAction: 'nothing',
-      downloadAttachments: true,
+      downloadAttachments: false,
       options: {{ customEmailConfig: '["ALL"]', forceReconnect: 60, trackLastMessageId: false }},
     }},
     credentials: {{ imap: newCredential('IMAP account') }},
