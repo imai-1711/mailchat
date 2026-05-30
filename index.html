@@ -737,7 +737,7 @@ function MailChat(){
       const results=await Promise.all(ids.map(id=>fetchEmails(id).then(mails=>mails.map(m=>({...m,accountId:m.accountId||id})))));
       const seen=new Set();
       const all=results.flat().filter(m=>{const k=getMailKey(m);if(seen.has(k))return false;seen.add(k);return true;});
-      setEmails(all);
+      setEmails(prev=>{const map=new Map(prev.map(m=>[getMailKey(m),m]));for(const m of all)map.set(getMailKey(m),m);return[...map.values()];});
       // 最新メール日時を記録（次回ポーリングで差分取得に使う）
       const latest=all.reduce((mx,m)=>(!mx||new Date(m.date)>new Date(mx))?m.date:mx,"");
       if(latest)setLastFetchAt(latest);

@@ -38,7 +38,7 @@ try{
       });
     });
   });
-  if(Object.keys(_dbSent).length>Object.keys(sd.sentEmails||{}).length)sd.sentEmails=_dbSent;
+  if(_dbSent&&Object.keys(_dbSent).length>0)sd.sentEmails={...(sd.sentEmails||{}),..._dbSent};
 }catch(_e){}
 
 return results;
