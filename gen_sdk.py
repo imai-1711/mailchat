@@ -20,14 +20,14 @@ sent_esc  = escape_for_template_literal(sent_raw)
 
 # メールを返す and 一括保存 are short enough to inline without escaping issues
 # (their backslashes are already in the live workflow and known-correct)
-# getEmailsCode: merge sd.inboxEmails + sd.sentEmails + sd.emails (migration)
+# getEmailsCode: merge sd.inboxEmails + sd.sentEmails + sd.mailchatSent + sd.emails (migration)
 get_emails_raw = r"""
 const fixMojibake=(str)=>{if(!str||typeof str!=="string")return str;if(!/[\xC0-\xFF]/.test(str))return str;try{const bytes=Buffer.from(str,"latin1");const decoded=new TextDecoder("utf-8").decode(bytes);if(/[　-鿿゠-ヿ぀-ゟ가-힯]/.test(decoded)&&!/[　-鿿]/.test(str))return decoded;}catch{}return str;};
 const fixEmail=(e)=>({...e,subject:fixMojibake(e.subject||""),body:fixMojibake(e.body||""),snippet:fixMojibake(e.snippet||""),fromName:fixMojibake(e.fromName||""),to:fixMojibake(e.to||""),});
 const sd=$getWorkflowStaticData("global");
 const since=$json?.query?.since||"";
 const sinceDate=since?new Date(since):null;
-const all=[...Object.values(sd.inboxEmails||{}),...Object.values(sd.sentEmails||{}),...Object.values(sd.emails||{})].map(fixEmail).filter(e=>!sinceDate||new Date(e.date)>sinceDate);
+const all=[...Object.values(sd.inboxEmails||{}),...Object.values(sd.sentEmails||{}),...Object.values(sd.mailchatSent||{}),...Object.values(sd.emails||{})].map(fixEmail).filter(e=>!sinceDate||new Date(e.date)>sinceDate);
 all.sort((a,b)=>new Date(b.date)-new Date(a.date));
 return [{json:{emails:all,total:all.length,fetchedAt:new Date().toISOString()}}];
 """
@@ -37,15 +37,16 @@ bulk_save_raw = r"""
 const sd=$getWorkflowStaticData("global");
 if(!sd.inboxEmails)sd.inboxEmails={};
 if(!sd.sentEmails)sd.sentEmails={};
+if(!sd.mailchatSent)sd.mailchatSent={};
 const incoming=$json.body?.emails||[];
 let added=0,updated=0;
 for(const m of incoming){
   if(!m.messageId)continue;
-  const store=m.isSent?sd.sentEmails:sd.inboxEmails;
+  const store=m.isSent?sd.mailchatSent:sd.inboxEmails;
   if(!store[m.messageId]){store[m.messageId]=m;added++;}
   else{const ex=store[m.messageId];store[m.messageId]={...ex,body:m.body||ex.body,htmlBody:m.htmlBody||ex.htmlBody||"",snippet:m.snippet||ex.snippet,attachments:m.attachments||ex.attachments||[],inReplyTo:m.inReplyTo||ex.inReplyTo||"",references:m.references||ex.references||""};updated++;}
 }
-const total=Object.keys(sd.inboxEmails).length+Object.keys(sd.sentEmails).length;
+const total=Object.keys(sd.inboxEmails).length+Object.keys(sd.sentEmails).length+Object.keys(sd.mailchatSent).length;
 return [{json:{ok:true,added,updated,total}}];
 """
 
